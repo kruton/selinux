@@ -119,11 +119,14 @@ static __attribute__((__noreturn__)) void usage(const char *progname)
 }
 
 #define FGETS(out, size, in) \
-if (fgets(out,size,in)==NULL) {	\
-		fprintf(stderr, "fgets failed at line %d: %s\n", __LINE__,\
-				strerror(errno)); \
-			exit(1);\
-}
+do { \
+	if (fgets(out,size,in)==NULL) {	\
+		fprintf(stderr, "fgets failed at line %d: %s\n", __LINE__, \
+			strerror(errno)); \
+		exit(1);\
+	} \
+} while (0)
+
 static int print_sid(sepol_security_id_t sid,
 		     context_struct_t * context
 		     __attribute__ ((unused)), void *data
@@ -501,8 +504,7 @@ int main(int argc, char **argv)
 					usage(argv[0]);
 					exit(1);
 				}
-				if (policyvers != n)
-					policyvers = n;
+				policyvers = n;
 				break;
 			}
 		case 'E':
@@ -968,8 +970,12 @@ int main(int argc, char **argv)
 			printf("fs kdevname?  ");
 			FGETS(ans, sizeof(ans), stdin);
 			ans[strlen(ans) - 1] = 0;
-			sepol_fs_sid(ans, &ssid, &tsid);
-			printf("fs_sid %d default_file_sid %d\n", ssid, tsid);
+			ret = sepol_fs_sid(ans, &ssid, &tsid);
+			if (ret) {
+				printf("unknown fs kdevname\n");
+			} else {
+				printf("fs_sid %d default_file_sid %d\n", ssid, tsid);
+			}
 			break;
 		case '9':
 			printf("protocol?  ");
@@ -997,8 +1003,12 @@ int main(int argc, char **argv)
 			printf("netif name?  ");
 			FGETS(ans, sizeof(ans), stdin);
 			ans[strlen(ans) - 1] = 0;
-			sepol_netif_sid(ans, &ssid, &tsid);
-			printf("if_sid %d default_msg_sid %d\n", ssid, tsid);
+			ret = sepol_netif_sid(ans, &ssid, &tsid);
+			if (ret) {
+				printf("unknown name\n");
+			} else {
+				printf("if_sid %d default_msg_sid %d\n", ssid, tsid);
+			}
 			break;
 		case 'b':{
 				char *p;
@@ -1177,8 +1187,6 @@ int main(int argc, char **argv)
 					printf("\nNo such class.\n");
 					break;
 				}
-				cladatum =
-				    policydb.class_val_to_struct[tclass - 1];
 			} else {
 				ans[strlen(ans) - 1] = 0;
 				cladatum =
@@ -1230,8 +1238,6 @@ int main(int argc, char **argv)
 					printf("\nNo such class.\n");
 					break;
 				}
-				cladatum =
-				    policydb.class_val_to_struct[tclass - 1];
 			} else {
 				ans[strlen(ans) - 1] = 0;
 				cladatum =

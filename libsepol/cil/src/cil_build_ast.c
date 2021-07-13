@@ -96,6 +96,9 @@ static int cil_allow_multiple_decls(struct cil_db *db, enum cil_flavor f_new, en
 			return CIL_TRUE;
 		}
 		break;
+	case CIL_OPTIONAL:
+		return CIL_TRUE;
+		break;
 	default:
 		break;
 	}
@@ -143,7 +146,7 @@ int cil_gen_node(struct cil_db *db, struct cil_tree_node *ast_node, struct cil_s
 	int rc = SEPOL_ERR;
 	symtab_t *symtab = NULL;
 
-	rc = cil_verify_name((const char*)key, nflavor);
+	rc = cil_verify_name(db, (const char*)key, nflavor);
 	if (rc != SEPOL_OK) {
 		goto exit;
 	}
@@ -198,6 +201,11 @@ int cil_gen_block(struct cil_db *db, struct cil_tree_node *parse_current, struct
 	int rc = SEPOL_ERR;
 
 	if (db == NULL || parse_current == NULL || ast_node == NULL) {
+		goto exit;
+	}
+
+	if (db->qualified_names) {
+		cil_log(CIL_ERR, "Blocks are not allowed when the option for qualified names is used\n");
 		goto exit;
 	}
 
@@ -271,6 +279,11 @@ int cil_gen_blockinherit(struct cil_db *db, struct cil_tree_node *parse_current,
 		goto exit;
 	}
 
+	if (db->qualified_names) {
+		cil_log(CIL_ERR, "Block inherit rules are not allowed when the option for qualified names is used\n");
+		goto exit;
+	}
+
 	rc = __cil_verify_syntax(parse_current, syntax, syntax_len);
 	if (rc != SEPOL_OK) {
 		goto exit;
@@ -328,6 +341,11 @@ int cil_gen_blockabstract(struct cil_db *db, struct cil_tree_node *parse_current
 		goto exit;
 	}
 
+	if (db->qualified_names) {
+		cil_log(CIL_ERR, "Block abstract rules are not allowed when the option for qualified names is used\n");
+		goto exit;
+	}
+
 	rc = __cil_verify_syntax(parse_current, syntax, syntax_len);
 	if (rc != SEPOL_OK) {
 		goto exit;
@@ -370,6 +388,11 @@ int cil_gen_in(struct cil_db *db, struct cil_tree_node *parse_current, struct ci
 	struct cil_in *in = NULL;
 
 	if (db == NULL || parse_current == NULL || ast_node == NULL) {
+		goto exit;
+	}
+
+	if (db->qualified_names) {
+		cil_log(CIL_ERR, "In-statements are not allowed when the option for qualified names is used\n");
 		goto exit;
 	}
 
@@ -444,6 +467,8 @@ int cil_gen_class(struct cil_db *db, struct cil_tree_node *parse_current, struct
 		}
 		if (class->num_perms > CIL_PERMS_PER_CLASS) {
 			cil_tree_log(parse_current, CIL_ERR, "Too many permissions in class '%s'", class->datum.name);
+			cil_tree_children_destroy(ast_node);
+			rc = SEPOL_ERR;
 			goto exit;
 		}
 
@@ -1018,6 +1043,8 @@ int cil_gen_common(struct cil_db *db, struct cil_tree_node *parse_current, struc
 	}
 	if (common->num_perms > CIL_PERMS_PER_CLASS) {
 		cil_tree_log(parse_current, CIL_ERR, "Too many permissions in common '%s'", common->datum.name);
+		cil_tree_children_destroy(ast_node);
+		rc = SEPOL_ERR;
 		goto exit;
 	}
 
@@ -3209,6 +3236,7 @@ int cil_gen_expandtypeattribute(struct cil_db *db, struct cil_tree_node *parse_c
 		expandattr->expand = CIL_FALSE;
 	} else {
 		cil_log(CIL_ERR, "Value must be either \'true\' or \'false\'");
+		rc = SEPOL_ERR;
 		goto exit;
 	}
 
@@ -3687,7 +3715,7 @@ int cil_gen_sensitivityorder(struct cil_db *db, struct cil_tree_node *parse_curr
 
 	cil_list_for_each(curr, sensorder->sens_list_str) {
 		if (curr->data == CIL_KEY_UNORDERED) {
-			cil_log(CIL_ERR, "Sensitivy order cannot be unordered.\n");
+			cil_log(CIL_ERR, "Sensitivity order cannot be unordered.\n");
 			rc = SEPOL_ERR;
 			goto exit;
 		}
@@ -4148,7 +4176,7 @@ void cil_destroy_context(struct cil_context *context)
 		return;
 	}
 
-	cil_symtab_datum_destroy(&context->datum);;
+	cil_symtab_datum_destroy(&context->datum);
 
 	if (context->range_str == NULL && context->range != NULL) {
 		cil_destroy_levelrange(context->range);
@@ -5168,6 +5196,7 @@ int cil_gen_macro(struct cil_db *db, struct cil_tree_node *parse_current, struct
 	char *key = NULL;
 	struct cil_macro *macro = NULL;
 	struct cil_tree_node *macro_content = NULL;
+	struct cil_tree_node *current_item;
 	enum cil_syntax syntax[] = {
 		CIL_SYN_STRING,
 		CIL_SYN_STRING,
@@ -5190,7 +5219,7 @@ int cil_gen_macro(struct cil_db *db, struct cil_tree_node *parse_current, struct
 
 	key = parse_current->next->data;
 
-	struct cil_tree_node *current_item = parse_current->next->next->cl_head;
+	current_item = parse_current->next->next->cl_head;
 	while (current_item != NULL) {
 		enum cil_syntax param_syntax[] = {
 			CIL_SYN_STRING,
@@ -5200,6 +5229,7 @@ int cil_gen_macro(struct cil_db *db, struct cil_tree_node *parse_current, struct
 		int param_syntax_len = sizeof(param_syntax)/sizeof(*param_syntax);
 		char *kind = NULL;
 		struct cil_param *param = NULL;
+		struct cil_list_item *curr_param;
 
 		rc =__cil_verify_syntax(current_item->cl_head, param_syntax, param_syntax_len);
 		if (rc != SEPOL_OK) {
@@ -5251,14 +5281,13 @@ int cil_gen_macro(struct cil_db *db, struct cil_tree_node *parse_current, struct
 
 		param->str =  current_item->cl_head->next->data;
 
-		rc = cil_verify_name(param->str, param->flavor);
+		rc = cil_verify_name(db, param->str, param->flavor);
 		if (rc != SEPOL_OK) {
 			cil_destroy_param(param);
 			goto exit;
 		}
 
 		//walk current list and check for duplicate parameters
-		struct cil_list_item *curr_param;
 		cil_list_for_each(curr_param, macro->params) {
 			if (param->str == ((struct cil_param*)curr_param->data)->str) {
 				cil_log(CIL_ERR, "Duplicate parameter\n");
@@ -5637,10 +5666,6 @@ int cil_fill_ipaddr(struct cil_tree_node *addr_node, struct cil_ipaddr *addr)
 		goto exit;
 	}
 
-	if (addr_node->cl_head != NULL ||  addr_node->next != NULL) {
-		goto exit;
-	}
-
 	if (strchr(addr_node->data, '.') != NULL) {
 		addr->family = AF_INET;
 	} else {
@@ -5881,6 +5906,11 @@ int cil_gen_defaultrange(struct cil_tree_node *parse_current, struct cil_tree_no
 
 	object = parse_current->next->next->data;
 	if (object == CIL_KEY_SOURCE) {
+		if (!parse_current->next->next->next) {
+			cil_log(CIL_ERR, "Missing 'low', 'high', or 'low-high'\n");
+			rc = SEPOL_ERR;
+			goto exit;
+		}
 		range = parse_current->next->next->next->data;
 		if (range == CIL_KEY_LOW) {
 			def->object_range = CIL_DEFAULT_SOURCE_LOW;
@@ -5894,6 +5924,11 @@ int cil_gen_defaultrange(struct cil_tree_node *parse_current, struct cil_tree_no
 			goto exit;
 		}
 	} else if (object == CIL_KEY_TARGET) {
+		if (!parse_current->next->next->next) {
+			cil_log(CIL_ERR, "Missing 'low', 'high', or 'low-high'\n");
+			rc = SEPOL_ERR;
+			goto exit;
+		}
 		range = parse_current->next->next->next->data;
 		if (range == CIL_KEY_LOW) {
 			def->object_range = CIL_DEFAULT_TARGET_LOW;

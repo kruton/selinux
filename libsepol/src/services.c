@@ -86,7 +86,7 @@ static int next_stack_entry;
 static void push(char *expr_ptr)
 {
 	if (next_stack_entry >= stack_len) {
-		char **new_stack = stack;
+		char **new_stack;
 		int new_stack_len;
 
 		if (stack_len == 0)
@@ -175,7 +175,7 @@ static int expr_buf_len;
 static void cat_expr_buf(char *e_buf, const char *string)
 {
 	int len, new_buf_len;
-	char *p, *new_buf = e_buf;
+	char *p, *new_buf;
 
 	while (1) {
 		p = e_buf + expr_buf_used;
@@ -290,6 +290,19 @@ static char *get_class_info(sepol_security_class_t tclass,
 {
 	constraint_expr_t *e;
 	int mls, state_num;
+	/* Determine statement type */
+	const char *statements[] = {
+		"constrain ",			/* 0 */
+		"mlsconstrain ",		/* 1 */
+		"validatetrans ",		/* 2 */
+		"mlsvalidatetrans ",	/* 3 */
+		0 };
+	size_t class_buf_len = 0;
+	size_t new_class_buf_len;
+	size_t buf_used;
+	int len;
+	char *class_buf = NULL, *p;
+	char *new_class_buf = NULL;
 
 	/* Find if MLS statement or not */
 	mls = 0;
@@ -300,25 +313,10 @@ static char *get_class_info(sepol_security_class_t tclass,
 		}
 	}
 
-	/* Determine statement type */
-	const char *statements[] = {
-		"constrain ",			/* 0 */
-		"mlsconstrain ",		/* 1 */
-		"validatetrans ",		/* 2 */
-		"mlsvalidatetrans ",	/* 3 */
-		0 };
-
 	if (xcontext == NULL)
 		state_num = mls + 0;
 	else
 		state_num = mls + 2;
-
-	size_t class_buf_len = 0;
-	size_t new_class_buf_len;
-	size_t buf_used;
-	int len;
-	char *class_buf = NULL, *p;
-	char *new_class_buf = NULL;
 
 	while (1) {
 		new_class_buf_len = class_buf_len + EXPR_BUF_SIZE;
@@ -408,7 +406,7 @@ static int constraint_expr_eval_reason(context_struct_t *scontext,
 #define TARGET  2
 #define XTARGET 3
 
-	int s_t_x_num = SOURCE;
+	int s_t_x_num;
 
 	/* Set 0 = fail, u = CEXPR_USER, r = CEXPR_ROLE, t = CEXPR_TYPE */
 	int u_r_t = 0;
@@ -417,12 +415,19 @@ static int constraint_expr_eval_reason(context_struct_t *scontext,
 	char *tgt = NULL;
 	int rc = 0, x;
 	char *class_buf = NULL;
+	int expr_list_len = 0;
+	int expr_count;
 
 	/*
 	 * The array of expression answer buffer pointers and counter.
 	 */
 	char **answer_list = NULL;
 	int answer_counter = 0;
+
+	/* The pop operands */
+	char *a;
+	char *b;
+	int a_len, b_len;
 
 	class_buf = get_class_info(tclass, constraint, xcontext);
 	if (!class_buf) {
@@ -431,13 +436,12 @@ static int constraint_expr_eval_reason(context_struct_t *scontext,
 	}
 
 	/* Original function but with buffer support */
-	int expr_list_len = 0;
 	expr_counter = 0;
 	expr_list = NULL;
 	for (e = constraint->expr; e; e = e->next) {
 		/* Allocate a stack to hold expression buffer entries */
 		if (expr_counter >= expr_list_len) {
-			char **new_expr_list = expr_list;
+			char **new_expr_list;
 			int new_expr_list_len;
 
 			if (expr_list_len == 0)
@@ -701,7 +705,7 @@ mls_ops:
 	 * expr_list malloc's. Normally they are released by the RPN to
 	 * infix code.
 	 */
-	int expr_count = expr_counter;
+	expr_count = expr_counter;
 	expr_counter = 0;
 
 	/*
@@ -714,11 +718,6 @@ mls_ops:
 		rc = -ENOMEM;
 		goto out;
 	}
-
-	/* The pop operands */
-	char *a;
-	char *b;
-	int a_len, b_len;
 
 	/* Convert constraint from RPN to infix notation. */
 	for (x = 0; x != expr_count; x++) {
@@ -778,14 +777,6 @@ mls_ops:
 			xcontext ? "Validatetrans" : "Constraint",
 			s[0] ? "GRANTED" : "DENIED");
 
-	int len, new_buf_len;
-	char *p, **new_buf = r_buf;
-	/*
-	 * These contain the constraint components that are added to the
-	 * callers reason buffer.
-	 */
-	const char *buffers[] = { class_buf, a, "); ", tmp_buf, 0 };
-
 	/*
 	 * This will add the constraints to the callers reason buffer (who is
 	 * responsible for freeing the memory). It will handle any realloc's
@@ -796,6 +787,14 @@ mls_ops:
 
 	if (r_buf && ((s[0] == 0) || ((s[0] == 1 &&
 				(flags & SHOW_GRANTED) == SHOW_GRANTED)))) {
+		int len, new_buf_len;
+		char *p, **new_buf = r_buf;
+		/*
+		* These contain the constraint components that are added to the
+		* callers reason buffer.
+		*/
+		const char *buffers[] = { class_buf, a, "); ", tmp_buf, 0 };
+
 		for (x = 0; buffers[x] != NULL; x++) {
 			while (1) {
 				p = *r_buf + reason_buf_used;
@@ -1024,53 +1023,6 @@ static int context_struct_compute_av(context_struct_t * scontext,
 	return 0;
 }
 
-int sepol_validate_transition(sepol_security_id_t oldsid,
-				     sepol_security_id_t newsid,
-				     sepol_security_id_t tasksid,
-				     sepol_security_class_t tclass)
-{
-	context_struct_t *ocontext;
-	context_struct_t *ncontext;
-	context_struct_t *tcontext;
-	class_datum_t *tclass_datum;
-	constraint_node_t *constraint;
-
-	if (!tclass || tclass > policydb->p_classes.nprim) {
-		ERR(NULL, "unrecognized class %d", tclass);
-		return -EINVAL;
-	}
-	tclass_datum = policydb->class_val_to_struct[tclass - 1];
-
-	ocontext = sepol_sidtab_search(sidtab, oldsid);
-	if (!ocontext) {
-		ERR(NULL, "unrecognized SID %d", oldsid);
-		return -EINVAL;
-	}
-
-	ncontext = sepol_sidtab_search(sidtab, newsid);
-	if (!ncontext) {
-		ERR(NULL, "unrecognized SID %d", newsid);
-		return -EINVAL;
-	}
-
-	tcontext = sepol_sidtab_search(sidtab, tasksid);
-	if (!tcontext) {
-		ERR(NULL, "unrecognized SID %d", tasksid);
-		return -EINVAL;
-	}
-
-	constraint = tclass_datum->validatetrans;
-	while (constraint) {
-		if (!constraint_expr_eval_reason(ocontext, ncontext, tcontext,
-					  0, constraint, NULL, 0)) {
-			return -EPERM;
-		}
-		constraint = constraint->next;
-	}
-
-	return 0;
-}
-
 /*
  * sepol_validate_transition_reason_buffer - the reason buffer is realloc'd
  * in the constraint_expr_eval_reason() function.
@@ -1230,7 +1182,7 @@ int sepol_string_to_security_class(const char *class_name,
 	class_datum_t *tclass_datum;
 
 	tclass_datum = hashtab_search(policydb->p_classes.table,
-				      (hashtab_key_t) class_name);
+				      class_name);
 	if (!tclass_datum) {
 		ERR(NULL, "unrecognized class %s", class_name);
 		return STATUS_ERR;
@@ -1259,7 +1211,7 @@ int sepol_string_to_av_perm(sepol_security_class_t tclass,
 	/* Check for unique perms then the common ones (if any) */
 	perm_datum = (perm_datum_t *)
 			hashtab_search(tclass_datum->permissions.table,
-			(hashtab_key_t)perm_name);
+			perm_name);
 	if (perm_datum != NULL) {
 		*av = 0x1 << (perm_datum->s.value - 1);
 		return STATUS_SUCCESS;
@@ -1270,7 +1222,7 @@ int sepol_string_to_av_perm(sepol_security_class_t tclass,
 
 	perm_datum = (perm_datum_t *)
 			hashtab_search(tclass_datum->comdatum->permissions.table,
-			(hashtab_key_t)perm_name);
+			perm_name);
 
 	if (perm_datum != NULL) {
 		*av = 0x1 << (perm_datum->s.value - 1);

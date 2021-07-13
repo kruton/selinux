@@ -593,11 +593,11 @@ exit:
 int __cil_typeattr_bitmap_init(policydb_t *pdb)
 {
 	int rc = SEPOL_ERR;
+	uint32_t i;
 
 	pdb->type_attr_map = cil_malloc(pdb->p_types.nprim * sizeof(ebitmap_t));
 	pdb->attr_type_map = cil_malloc(pdb->p_types.nprim * sizeof(ebitmap_t));
 
-	uint32_t i = 0;
 	for (i = 0; i < pdb->p_types.nprim; i++) {
 		ebitmap_init(&pdb->type_attr_map[i]);
 		ebitmap_init(&pdb->attr_type_map[i]);
@@ -1073,7 +1073,7 @@ int __cil_type_rule_to_avtab(policydb_t *pdb, const struct cil_db *db, struct ci
 	type_datum_t *sepol_src = NULL;
 	type_datum_t *sepol_tgt = NULL;
 	class_datum_t *sepol_obj = NULL;
-	struct cil_list *class_list;
+	struct cil_list *class_list = NULL;
 	type_datum_t *sepol_result = NULL;
 	ebitmap_t src_bitmap, tgt_bitmap;
 	ebitmap_node_t *node1, *node2;
@@ -1129,7 +1129,7 @@ int __cil_typetransition_to_avtab(policydb_t *pdb, const struct cil_db *db, stru
 	type_datum_t *sepol_src = NULL;
 	type_datum_t *sepol_tgt = NULL;
 	class_datum_t *sepol_obj = NULL;
-	struct cil_list *class_list;
+	struct cil_list *class_list = NULL;
 	type_datum_t *sepol_result = NULL;
 	ebitmap_t src_bitmap, tgt_bitmap;
 	ebitmap_node_t *node1, *node2;
@@ -2227,7 +2227,7 @@ int cil_booleanif_to_policydb(policydb_t *pdb, const struct cil_db *db, struct c
 	int rc = SEPOL_ERR;
 	struct cil_args_booleanif bool_args;
 	struct cil_booleanif *cil_boolif = (struct cil_booleanif*)node->data;
-	struct cil_tree_node *cb_node = node->cl_head;
+	struct cil_tree_node *cb_node;
 	struct cil_tree_node *true_node = NULL;
 	struct cil_tree_node *false_node = NULL;
 	struct cil_tree_node *tmp_node = NULL;
@@ -2338,7 +2338,7 @@ int cil_roletrans_to_policydb(policydb_t *pdb, const struct cil_db *db, struct c
 	role_datum_t *sepol_src = NULL;
 	type_datum_t *sepol_tgt = NULL;
 	class_datum_t *sepol_obj = NULL;
-	struct cil_list *class_list;
+	struct cil_list *class_list = NULL;
 	role_datum_t *sepol_result = NULL;
 	role_trans_t *new = NULL;
 	uint32_t *new_role = NULL;
@@ -2657,6 +2657,7 @@ int __cil_constrain_expr_to_sepol_expr_helper(policydb_t *pdb, const struct cil_
 	int rc = SEPOL_ERR;
 	struct cil_list_item *item;
 	enum cil_flavor flavor;
+	enum cil_flavor cil_op;
 	constraint_expr_t *op, *h1, *h2, *t1, *t2;
 	int is_leaf = CIL_FALSE;
 
@@ -2673,7 +2674,7 @@ int __cil_constrain_expr_to_sepol_expr_helper(policydb_t *pdb, const struct cil_
 		goto exit;
 	}
 
-	enum cil_flavor cil_op = (enum cil_flavor)(uintptr_t)item->data;
+	cil_op = (enum cil_flavor)(uintptr_t)item->data;
 	switch (cil_op) {
 	case CIL_NOT:
 		op->expr_type = CEXPR_NOT;
@@ -3165,7 +3166,7 @@ int cil_rangetransition_to_policydb(policydb_t *pdb, const struct cil_db *db, st
 	type_datum_t *sepol_src = NULL;
 	type_datum_t *sepol_tgt = NULL;
 	class_datum_t *sepol_class = NULL;
-	struct cil_list *class_list;
+	struct cil_list *class_list = NULL;
 	range_trans_t *newkey = NULL;
 	struct mls_range *newdatum = NULL;
 	ebitmap_t src_bitmap, tgt_bitmap;
@@ -3602,7 +3603,7 @@ int cil_default_to_policydb(policydb_t *pdb, struct cil_default *def)
 {
 	struct cil_list_item *curr;
 	class_datum_t *sepol_class;
-	struct cil_list *class_list;
+	struct cil_list *class_list = NULL;
 
 	cil_list_for_each(curr, def->class_datums) {
 		struct cil_list_item *c;
@@ -3657,7 +3658,7 @@ int cil_defaultrange_to_policydb(policydb_t *pdb, struct cil_defaultrange *def)
 {
 	struct cil_list_item *curr;
 	class_datum_t *sepol_class;
-	struct cil_list *class_list;
+	struct cil_list *class_list = NULL;
 
 	cil_list_for_each(curr, def->class_datums) {
 		struct cil_list_item *c;
@@ -4276,7 +4277,7 @@ static unsigned int avrulex_hash(__attribute__((unused)) hashtab_t h, const_hash
 
 	uint32_t hash = 0;
 
-#define mix(input) { \
+#define mix(input) do { \
 	uint32_t v = input; \
 	v *= c1; \
 	v = (v << r1) | (v >> (32 - r1)); \
@@ -4284,7 +4285,7 @@ static unsigned int avrulex_hash(__attribute__((unused)) hashtab_t h, const_hash
 	hash ^= v; \
 	hash = (hash << r2) | (hash >> (32 - r2)); \
 	hash = hash * m + n; \
-}
+} while (0)
 
 	mix(k->target_class);
 	mix(k->target_type);

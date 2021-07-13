@@ -10,39 +10,34 @@
    </refentryinfo>
 
    <refmeta>
-      <refentrytitle>SECIL2CONF</refentrytitle>
+      <refentrytitle>SECIL2TREE</refentrytitle>
       <manvolnum>8</manvolnum>
-      <refmiscinfo class="date">21 November 2016</refmiscinfo>
-      <refmiscinfo class="source">secil2conf</refmiscinfo>
-      <refmiscinfo class="manual">SELinux CIL to policy.conf Converter</refmiscinfo>
+      <refmiscinfo class="date">05 April 2021</refmiscinfo>
+      <refmiscinfo class="source">secil2tree</refmiscinfo>
+      <refmiscinfo class="manual">SELinux CIL AST Writer</refmiscinfo>
    </refmeta>
    <refnamediv id="name">
-      <refname>secil2conf</refname>
-      <refpurpose>invoke the SELinux Common Intermediate Language (CIL) to policy.conf converter</refpurpose>
+      <refname>secil2tree</refname>
+      <refpurpose>invoke the SELinux Common Intermediate Language (CIL) AST Writer </refpurpose>
    </refnamediv>
 
    <refsynopsisdiv id="synopsis">
       <cmdsynopsis>
-        <command>secil2conf</command>
+        <command>secil2tree</command>
           <arg choice="opt" rep="repeat"><replaceable>OPTION</replaceable></arg>
           <arg choice="plain"><replaceable>file</replaceable></arg>
       </cmdsynopsis>
    </refsynopsisdiv>
 
    <refsect1 id="description"><title>DESCRIPTION</title>
-      <para><emphasis role="italic">secil2conf</emphasis> invokes the CIL to policy.conf converter with the specified <emphasis role="italic">argument</emphasis>s.</para>
+      <para><emphasis role="italic">secil2tree</emphasis> invokes the CIL AST Writer with the specified <emphasis role="italic">argument</emphasis>s.</para>
    </refsect1>
 
    <refsect1 id="options"><title>OPTIONS</title>
       <variablelist>
          <varlistentry>
             <term><option>-o, --output=&lt;file></option></term>
-            <listitem><para>Write policy.conf to <emphasis role="italic">file</emphasis> (default: policy.conf)</para></listitem>
-         </varlistentry>
-
-         <varlistentry>
-            <term><option>-M, --mls true|false</option></term>
-            <listitem><para>Build an mls policy.conf. Must be <emphasis role="bold">true</emphasis> or <emphasis role="bold">false</emphasis>. This will override the <emphasis role="bold">(mls <emphasis role="italic">boolean</emphasis></emphasis><emphasis role="bold">)</emphasis> statement if present in the policy.</para></listitem>
+            <listitem><para>Write AST to <emphasis role="italic">file</emphasis> (default: stdout)</para></listitem>
          </varlistentry>
 
          <varlistentry>
@@ -53,6 +48,11 @@
          <varlistentry>
             <term><option>-Q, --qualified-names</option></term>
             <listitem><para>Allow names containing dots (qualified names). Blocks, blockinherits, blockabstracts, and in-statements will not be allowed.</para></listitem>
+         </varlistentry>
+
+         <varlistentry>
+            <term><option>-A, --ast-phase=&lt;phase></option></term>
+            <listitem><para>Write AST of phase <emphasis role="italic">phase</emphasis>. Must be <emphasis role="bold">parse</emphasis>, <emphasis role="bold">build</emphasis>, or <emphasis role="bold">resolve</emphasis>. (default: <emphasis role="bold">resolve</emphasis>)</para></listitem>
          </varlistentry>
 
          <varlistentry>
@@ -75,13 +75,12 @@
             <manvolnum>8</manvolnum>
          </citerefentry></member>
          <member><citerefentry>
-            <refentrytitle>sestatus</refentrytitle>
+            <refentrytitle>secil2conf</refentrytitle>
             <manvolnum>8</manvolnum>
          </citerefentry></member>
       </simplelist>
       </para>
       <para>HTML documentation describing the CIL language statements is available starting with <emphasis role="italic">docs/html/index.html</emphasis>.</para>
       <para>PDF documentation describing the CIL language statements is available at: <emphasis role="italic">docs/pdf/CIL_Reference_Guide.pdf</emphasis>.</para>
-      <para>There is a CIL Design Wiki at: <ulink url="http://github.com/SELinuxProject/cil/wiki"></ulink> that describes the goals and features of the CIL language.</para>
    </refsect1>
 </refentry>

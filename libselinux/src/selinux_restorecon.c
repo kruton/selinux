@@ -62,7 +62,7 @@ static uint64_t fc_count = 0;	/* Number of files processed so far */
 static uint64_t efile_count;	/* Estimated total number of files */
 
 /* Store information on directories with xattr's. */
-struct dir_xattr *dir_xattr_list;
+static struct dir_xattr *dir_xattr_list;
 static struct dir_xattr *dir_xattr_last;
 
 /* restorecon_flags for passing to restorecon_sb() */
@@ -230,7 +230,6 @@ static int exclude_non_seclabel_mounts(void)
 	struct utsname uts;
 	FILE *fp;
 	size_t len;
-	ssize_t num;
 	int index = 0, found = 0, nfile = 0;
 	char *mount_info[4];
 	char *buf = NULL, *item;
@@ -245,7 +244,7 @@ static int exclude_non_seclabel_mounts(void)
 	if (!fp)
 		return 0;
 
-	while ((num = getline(&buf, &len, fp)) != -1) {
+	while (getline(&buf, &len, fp) != -1) {
 		found = 0;
 		index = 0;
 		item = strtok(buf, " ");
@@ -1153,7 +1152,7 @@ void selinux_restorecon_set_sehandle(struct selabel_handle *hndl)
 	unsigned char *fc_digest;
 	size_t num_specfiles, fc_digest_len;
 
-	fc_sehandle = (struct selabel_handle *) hndl;
+	fc_sehandle = hndl;
 	if (!fc_sehandle)
 		return;
 

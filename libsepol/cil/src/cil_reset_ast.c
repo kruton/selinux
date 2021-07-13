@@ -60,8 +60,12 @@ static void cil_reset_classpermission(struct cil_classpermission *cp)
 
 static void cil_reset_classperms_set(struct cil_classperms_set *cp_set)
 {
-	if (cp_set == NULL) {
+	if (cp_set == NULL || cp_set->set == NULL) {
 		return;
+	}
+
+	if (cp_set->set->datum.name == NULL) {
+		cil_reset_classperms_list(cp_set->set->classperms);
 	}
 
 	cp_set->set = NULL;
@@ -136,8 +140,11 @@ static void cil_reset_userattributeset(struct cil_userattributeset *uas)
 
 static void cil_reset_selinuxuser(struct cil_selinuxuser *selinuxuser)
 {
+	selinuxuser->user = NULL;
 	if (selinuxuser->range_str == NULL) {
 		cil_reset_levelrange(selinuxuser->range);
+	} else {
+		selinuxuser->range = NULL;
 	}
 }
 
@@ -210,6 +217,8 @@ static void cil_reset_rangetransition(struct cil_rangetransition *rangetrans)
 {
 	if (rangetrans->range_str == NULL) {
 		cil_reset_levelrange(rangetrans->range);
+	} else {
+		rangetrans->range = NULL;
 	}
 }
 
@@ -247,6 +256,7 @@ static void cil_reset_catset(struct cil_catset *catset)
 
 static inline void cil_reset_level(struct cil_level *level)
 {
+	level->sens = NULL;
 	cil_reset_cats(level->cats);
 }
 
@@ -254,10 +264,14 @@ static inline void cil_reset_levelrange(struct cil_levelrange *levelrange)
 {
 	if (levelrange->low_str == NULL) {
 		cil_reset_level(levelrange->low);
+	} else {
+		levelrange->low = NULL;
 	}
 
 	if (levelrange->high_str == NULL) {
 		cil_reset_level(levelrange->high);
+	} else {
+		levelrange->high = NULL;
 	}
 }
 
@@ -265,6 +279,8 @@ static inline void cil_reset_userlevel(struct cil_userlevel *userlevel)
 {
 	if (userlevel->level_str == NULL) {
 		cil_reset_level(userlevel->level);
+	} else {
+		userlevel->level = NULL;
 	}
 }
 
@@ -272,13 +288,20 @@ static inline void cil_reset_userrange(struct cil_userrange *userrange)
 {
 	if (userrange->range_str == NULL) {
 		cil_reset_levelrange(userrange->range);
+	} else {
+		userrange->range = NULL;
 	}
 }
 
 static inline void cil_reset_context(struct cil_context *context)
 {
+	if (!context) {
+		return;
+	}
 	if (context->range_str == NULL) {
 		cil_reset_levelrange(context->range);
+	} else {
+		context->range = NULL;
 	}
 }
 
@@ -286,26 +309,35 @@ static void cil_reset_sidcontext(struct cil_sidcontext *sidcontext)
 {
 	if (sidcontext->context_str == NULL) {
 		cil_reset_context(sidcontext->context);
+	} else {
+		sidcontext->context = NULL;
 	}
 }
 
 static void cil_reset_filecon(struct cil_filecon *filecon)
 {
-	if (filecon->context_str == NULL && filecon->context != NULL) {
+	if (filecon->context_str == NULL) {
 		cil_reset_context(filecon->context);
+	} else {
+		filecon->context = NULL;
 	}
 }
 
 static void cil_reset_ibpkeycon(struct cil_ibpkeycon *ibpkeycon)
 {
-	if (!ibpkeycon->context_str)
+	if (ibpkeycon->context_str == NULL) {
 		cil_reset_context(ibpkeycon->context);
+	} else {
+		ibpkeycon->context = NULL;
+	}
 }
 
 static void cil_reset_portcon(struct cil_portcon *portcon)
 {
 	if (portcon->context_str == NULL) {
 		cil_reset_context(portcon->context);
+	} else {
+		portcon->context = NULL;
 	}
 }
 
@@ -313,6 +345,8 @@ static void cil_reset_nodecon(struct cil_nodecon *nodecon)
 {
 	if (nodecon->context_str == NULL) {
 		cil_reset_context(nodecon->context);
+	} else {
+		nodecon->context = NULL;
 	}
 }
 
@@ -320,6 +354,8 @@ static void cil_reset_genfscon(struct cil_genfscon *genfscon)
 {
 	if (genfscon->context_str == NULL) {
 		cil_reset_context(genfscon->context);
+	} else {
+		genfscon->context = NULL;
 	}
 }
 
@@ -327,17 +363,23 @@ static void cil_reset_netifcon(struct cil_netifcon *netifcon)
 {
 	if (netifcon->if_context_str == NULL) {
 		cil_reset_context(netifcon->if_context);
+	} else {
+		netifcon->if_context = NULL;
 	}
 
 	if (netifcon->packet_context_str == NULL) {
 		cil_reset_context(netifcon->packet_context);
+	} else {
+		netifcon->packet_context = NULL;
 	}
 }
 
 static void cil_reset_ibendportcon(struct cil_ibendportcon *ibendportcon)
 {
-	if (!ibendportcon->context_str) {
+	if (ibendportcon->context_str == NULL) {
 		cil_reset_context(ibendportcon->context);
+	} else {
+		ibendportcon->context = NULL;
 	}
 }
 
@@ -345,6 +387,8 @@ static void cil_reset_pirqcon(struct cil_pirqcon *pirqcon)
 {
 	if (pirqcon->context_str == NULL) {
 		cil_reset_context(pirqcon->context);
+	} else {
+		pirqcon->context = NULL;
 	}
 }
 
@@ -352,6 +396,8 @@ static void cil_reset_iomemcon(struct cil_iomemcon *iomemcon)
 {
 	if (iomemcon->context_str == NULL) {
 		cil_reset_context(iomemcon->context);
+	} else {
+		iomemcon->context = NULL;
 	}
 }
 
@@ -359,6 +405,8 @@ static void cil_reset_ioportcon(struct cil_ioportcon *ioportcon)
 {
 	if (ioportcon->context_str == NULL) {
 		cil_reset_context(ioportcon->context);
+	} else {
+		ioportcon->context = NULL;
 	}
 }
 
@@ -366,6 +414,8 @@ static void cil_reset_pcidevicecon(struct cil_pcidevicecon *pcidevicecon)
 {
 	if (pcidevicecon->context_str == NULL) {
 		cil_reset_context(pcidevicecon->context);
+	} else {
+		pcidevicecon->context = NULL;
 	}
 }
 
@@ -373,6 +423,8 @@ static void cil_reset_devicetreecon(struct cil_devicetreecon *devicetreecon)
 {
 	if (devicetreecon->context_str == NULL) {
 		cil_reset_context(devicetreecon->context);
+	} else {
+		devicetreecon->context = NULL;
 	}
 }
 
@@ -380,6 +432,8 @@ static void cil_reset_fsuse(struct cil_fsuse *fsuse)
 {
 	if (fsuse->context_str == NULL) {
 		cil_reset_context(fsuse->context);
+	} else {
+		fsuse->context = NULL;
 	}
 }
 

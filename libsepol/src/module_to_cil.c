@@ -62,7 +62,7 @@
 #  define UNUSED(x) UNUSED_ ## x
 #endif
 
-FILE *out_file;
+static FILE *out_file;
 
 #define STACK_SIZE 16
 #define DEFAULT_LEVEL "systemlow"
@@ -107,8 +107,8 @@ static void cil_printf(const char *fmt, ...) {
 __attribute__ ((format(printf, 2, 3)))
 static void cil_println(int indent, const char *fmt, ...)
 {
-	cil_indent(indent);
 	va_list argptr;
+	cil_indent(indent);
 	va_start(argptr, fmt);
 	if (vfprintf(out_file, fmt, argptr) < 0) {
 		log_err("Failed to write to output");
@@ -235,12 +235,14 @@ static void role_list_destroy(void)
 
 static void attr_list_destroy(struct list **attr_list)
 {
+	struct list_node *curr;
+	struct attr_list_node *attr;
+
 	if (attr_list == NULL || *attr_list == NULL) {
 		return;
 	}
 
-	struct list_node *curr = (*attr_list)->head;
-	struct attr_list_node *attr;
+	curr = (*attr_list)->head;
 
 	while (curr != NULL) {
 		attr = curr->data;
@@ -1134,16 +1136,14 @@ static int name_list_to_string(char **names, unsigned int num_names, char **stri
 	char *strpos;
 
 	for (i = 0; i < num_names; i++) {
-		len += strlen(names[i]);
-		if (len < strlen(names[i])) {
+		if (__builtin_add_overflow(len, strlen(names[i]), &len)) {
 			log_err("Overflow");
 			return -1;
 		}
 	}
 
 	// add spaces + null terminator
-	len += num_names;
-	if (len < (size_t)num_names) {
+	if (__builtin_add_overflow(len, (size_t)num_names, &len)) {
 		log_err("Overflow");
 		return -1;
 	}
@@ -2965,7 +2965,7 @@ static int genfscon_to_cil(struct policydb *pdb)
 
 	for (genfs = pdb->genfs; genfs != NULL; genfs = genfs->next) {
 		for (ocon = genfs->head; ocon != NULL; ocon = ocon->next) {
-			cil_printf("(genfscon %s %s ", genfs->fstype, ocon->u.name);
+			cil_printf("(genfscon %s \"%s\" ", genfs->fstype, ocon->u.name);
 			context_to_cil(pdb, &ocon->context[0]);
 			cil_printf(")\n");
 		}
@@ -3527,12 +3527,12 @@ exit:
 static int additive_scopes_to_cil(int indent, struct policydb *pdb, struct avrule_block *block, struct stack *decl_stack)
 {
 	int rc = -1;
+	struct avrule_decl *decl = stack_peek(decl_stack);
 	struct map_args args;
 	args.pdb = pdb;
 	args.block = block;
 	args.decl_stack = decl_stack;
 	args.indent = indent;
-	struct avrule_decl *decl = stack_peek(decl_stack);
 
 	for (args.sym_index = 0; args.sym_index < SYM_NUM; args.sym_index++) {
 		if (func_to_cil[args.sym_index] == NULL) {
@@ -3974,7 +3974,7 @@ int sepol_module_policydb_to_cil(FILE *fp, struct policydb *pdb, int linked)
 
 	if (pdb->policy_type != SEPOL_POLICY_BASE &&
 		pdb->policy_type != SEPOL_POLICY_MOD) {
-		log_err("Policy pakcage is not a base or module");
+		log_err("Policy package is not a base or module");
 		rc = -1;
 		goto exit;
 	}

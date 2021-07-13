@@ -54,6 +54,8 @@ struct cil_tree_node *cil_tree_get_next_path(struct cil_tree_node *node, char **
 char *cil_tree_get_cil_path(struct cil_tree_node *node);
 __attribute__((format (printf, 3, 4))) void cil_tree_log(struct cil_tree_node *node, enum cil_log_level lvl, const char* msg, ...);
 
+int cil_tree_subtree_has_decl(struct cil_tree_node *node);
+
 int cil_tree_init(struct cil_tree **tree);
 void cil_tree_destroy(struct cil_tree **tree);
 void cil_tree_subtree_destroy(struct cil_tree_node *node);
@@ -61,8 +63,6 @@ void cil_tree_children_destroy(struct cil_tree_node *node);
 
 void cil_tree_node_init(struct cil_tree_node **node);
 void cil_tree_node_destroy(struct cil_tree_node **node);
-
-void cil_tree_print(struct cil_tree_node *tree, uint32_t depth);
 
 //finished values
 #define CIL_TREE_SKIP_NOTHING	0

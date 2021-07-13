@@ -44,6 +44,7 @@
 #include "cil_tree.h"
 #include "cil_list.h"
 #include "cil_find.h"
+#include "cil_stack.h"
 
 #include "cil_verify.h"
 
@@ -91,7 +92,7 @@ static int __cil_is_reserved_name(const char *name, enum cil_flavor flavor)
 	return CIL_FALSE;
 }
 
-int cil_verify_name(const char *name, enum cil_flavor flavor)
+int cil_verify_name(const struct cil_db *db, const char *name, enum cil_flavor flavor)
 {
 	int rc = SEPOL_ERR;
 	int len;
@@ -115,10 +116,19 @@ int cil_verify_name(const char *name, enum cil_flavor flavor)
 			goto exit;
 	}
 
-	for (i = 1; i < len; i++) {
-		if (!isalnum(name[i]) && name[i] != '_' && name[i] != '-') {
-			cil_log(CIL_ERR, "Invalid character \"%c\" in %s\n", name[i], name);
-			goto exit;
+	if (db->qualified_names == CIL_FALSE) {
+		for (i = 1; i < len; i++) {
+			if (!isalnum(name[i]) && name[i] != '_' && name[i] != '-') {
+				cil_log(CIL_ERR, "Invalid character \"%c\" in %s\n", name[i], name);
+				goto exit;
+			}
+		}
+	} else {
+		for (i = 1; i < len; i++) {
+			if (!isalnum(name[i]) && name[i] != '_' && name[i] != '-' && name[i] != '.') {
+				cil_log(CIL_ERR, "Invalid character \"%c\" in %s\n", name[i], name);
+				goto exit;
+			}
 		}
 	}
 
@@ -430,26 +440,80 @@ int cil_verify_decl_does_not_shadow_macro_parameter(struct cil_macro *macro, str
 	return SEPOL_OK;
 }
 
-int cil_verify_no_self_reference(struct cil_symtab_datum *datum, struct cil_list *datum_list)
-{
-	struct cil_list_item *i;
+static int cil_verify_no_self_reference(enum cil_flavor flavor, struct cil_symtab_datum *datum, struct cil_stack *stack);
 
-	cil_list_for_each(i, datum_list) {
-		if (i->flavor == CIL_DATUM) {
-			struct cil_symtab_datum *d = i->data;
-			if (d == datum) {
-				cil_log(CIL_ERR,"Self-reference found for %s\n",datum->name);
-				return SEPOL_ERR;
-			}
-		} else if (i->flavor == CIL_LIST) {
-			int rc = cil_verify_no_self_reference(datum, i->data);
-			if (rc != SEPOL_OK) {
-				return SEPOL_ERR;
-			}
+static int __verify_no_self_reference_in_expr(struct cil_list *expr, struct cil_stack *stack)
+{
+	struct cil_list_item *item;
+	int rc = SEPOL_OK;
+
+	if (!expr) {
+		return SEPOL_OK;
+	}
+
+	cil_list_for_each(item, expr) {
+		if (item->flavor == CIL_DATUM) {
+			struct cil_symtab_datum* datum = item->data;
+			rc = cil_verify_no_self_reference(FLAVOR(datum), datum, stack);
+		} else if (item->flavor == CIL_LIST) {
+			rc = __verify_no_self_reference_in_expr(item->data, stack);
+		}
+		if (rc != SEPOL_OK) {
+			return SEPOL_ERR;
 		}
 	}
 
 	return SEPOL_OK;
+}
+
+static int cil_verify_no_self_reference(enum cil_flavor flavor, struct cil_symtab_datum *datum, struct cil_stack *stack)
+{
+	struct cil_stack_item *item;
+	int i = 0;
+	int rc = SEPOL_OK;
+
+	cil_stack_for_each(stack, i, item) {
+		struct cil_symtab_datum *prev = item->data;
+		if (datum == prev) {
+			cil_tree_log(NODE(datum), CIL_ERR, "Self-reference found for %s", datum->name);
+			return SEPOL_ERR;
+		}
+	}
+
+	switch (flavor) {
+	case CIL_USERATTRIBUTE: {
+		struct cil_userattribute *attr = (struct cil_userattribute *)datum;
+		cil_stack_push(stack, CIL_DATUM, datum);
+		rc = __verify_no_self_reference_in_expr(attr->expr_list, stack);
+		cil_stack_pop(stack);
+		break;
+	}
+	case CIL_ROLEATTRIBUTE: {
+		struct cil_roleattribute *attr = (struct cil_roleattribute *)datum;
+		cil_stack_push(stack, CIL_DATUM, datum);
+		rc = __verify_no_self_reference_in_expr(attr->expr_list, stack);
+		cil_stack_pop(stack);
+		break;
+	}
+	case CIL_TYPEATTRIBUTE: {
+		struct cil_typeattribute *attr = (struct cil_typeattribute *)datum;
+		cil_stack_push(stack, CIL_DATUM, datum);
+		rc = __verify_no_self_reference_in_expr(attr->expr_list, stack);
+		cil_stack_pop(stack);
+		break;
+	}
+	case CIL_CATSET: {
+		struct cil_catset *set = (struct cil_catset *)datum;
+		cil_stack_push(stack, CIL_DATUM, datum);
+		rc = __verify_no_self_reference_in_expr(set->cats->datum_expr, stack);
+		cil_stack_pop(stack);
+		break;
+	}
+	default:
+		break;
+	}
+
+	return rc;
 }
 
 int __cil_verify_ranges(struct cil_list *list)
@@ -1731,8 +1795,12 @@ static int __verify_map_perm_classperms(__attribute__((unused)) hashtab_key_t k,
 {
 	struct cil_verify_map_args *map_args = args;
 	struct cil_perm *cmp = (struct cil_perm *)d;
+	int rc;
 
-	map_args->rc = __cil_verify_classperms(cmp->classperms, &cmp->datum, &map_args->class->datum, &cmp->datum, CIL_MAP_PERM, 0, 2);
+	rc = __cil_verify_classperms(cmp->classperms, &cmp->datum, &map_args->class->datum, &cmp->datum, CIL_MAP_PERM, 0, 2);
+	if (rc != SEPOL_OK) {
+		map_args->rc = rc;
+	}
 
 	return SEPOL_OK;
 }
@@ -1757,27 +1825,22 @@ static int __cil_verify_map_class(struct cil_tree_node *node)
 
 int __cil_pre_verify_helper(struct cil_tree_node *node, uint32_t *finished, __attribute__((unused)) void *extra_args)
 {
-	int rc = SEPOL_ERR;
+	int rc = SEPOL_OK;
 
-	if (node->flavor == CIL_MACRO) {
+	switch (node->flavor) {
+	case CIL_MACRO: {
 		*finished = CIL_TREE_SKIP_HEAD;
-		rc = SEPOL_OK;
-		goto exit;
-	} else if (node->flavor == CIL_BLOCK) {
+		break;
+	}
+	case CIL_BLOCK: {
 		struct cil_block *blk = node->data;
 		if (blk->is_abstract == CIL_TRUE) {
 			*finished = CIL_TREE_SKIP_HEAD;
 		}
-		rc = SEPOL_OK;
-		goto exit;
+		break;
 	}
-
-	switch (node->flavor) {
 	case CIL_USER:
 		rc = __cil_verify_user_pre_eval(node);
-		if (rc != SEPOL_OK) {
-			goto exit;
-		}
 		break;
 	case CIL_MAP_CLASS:
 		rc = __cil_verify_map_class(node);
@@ -1785,11 +1848,20 @@ int __cil_pre_verify_helper(struct cil_tree_node *node, uint32_t *finished, __at
 	case CIL_CLASSPERMISSION:
 		rc = __cil_verify_classpermission(node);
 		break;
+	case CIL_USERATTRIBUTE:
+	case CIL_ROLEATTRIBUTE:
+	case CIL_TYPEATTRIBUTE:
+	case CIL_CATSET: {
+		struct cil_stack *stack;
+		cil_stack_init(&stack);
+		rc = cil_verify_no_self_reference(node->flavor, node->data, stack);
+		cil_stack_destroy(&stack);
+		break;
+	}
 	default:
 		rc = SEPOL_OK;
 		break;
 	}
 
-exit:
 	return rc;
 }

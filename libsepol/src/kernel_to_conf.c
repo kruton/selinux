@@ -1025,12 +1025,15 @@ static char *cats_ebitmap_to_str(struct ebitmap *cats, char **val_to_name)
 {
 	struct ebitmap_node *node;
 	uint32_t i, start, range, first;
-	char *catsbuf, *p;
+	char *catsbuf = NULL, *p;
 	const char *fmt;
 	char sep;
 	int len, remaining;
 
 	remaining = (int)cats_ebitmap_len(cats, val_to_name);
+	if (remaining == 0) {
+		goto exit;
+	}
 	catsbuf = malloc(remaining);
 	if (!catsbuf) {
 		goto exit;
@@ -2527,7 +2530,7 @@ static int write_genfscon_rules_to_conf(FILE *out, struct policydb *pdb)
 				goto exit;
 			}
 
-			rc = strs_create_and_add(strs, "genfscon %s %s %s", 3,
+			rc = strs_create_and_add(strs, "genfscon %s \"%s\" %s", 3,
 						 fstype, name, ctx);
 			free(ctx);
 			if (rc != 0) {
@@ -2992,7 +2995,7 @@ static int write_xen_devicetree_rules_to_conf(FILE *out, struct policydb *pdb)
 			goto exit;
 		}
 
-		sepol_printf(out, "devicetreecon %s %s\n", name, ctx);
+		sepol_printf(out, "devicetreecon \"%s\" %s\n", name, ctx);
 
 		free(ctx);
 	}

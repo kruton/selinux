@@ -50,10 +50,11 @@
 #include "cil_binary.h"
 #include "cil_policy.h"
 #include "cil_strpool.h"
+#include "cil_write_ast.h"
 
-int cil_sym_sizes[CIL_SYM_ARRAY_NUM][CIL_SYM_NUM] = {
+const int cil_sym_sizes[CIL_SYM_ARRAY_NUM][CIL_SYM_NUM] = {
 	{64, 64, 64, 1 << 13, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64},
-	{64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64},
+	{8, 8, 8, 32, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
 	{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
 	{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
 	{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
@@ -439,6 +440,7 @@ void cil_db_init(struct cil_db **db)
 	(*db)->handle_unknown = -1;
 	(*db)->mls = -1;
 	(*db)->multiple_decls = CIL_FALSE;
+	(*db)->qualified_names = CIL_FALSE;
 	(*db)->target_platform = SEPOL_TARGET_SELINUX;
 	(*db)->policy_version = POLICYDB_VERSION_MAX;
 }
@@ -569,6 +571,97 @@ int cil_compile(struct cil_db *db)
 
 exit:
 
+	return rc;
+}
+
+int cil_write_parse_ast(FILE *out, cil_db_t *db)
+{
+	int rc = SEPOL_ERR;
+
+	if (db == NULL) {
+		goto exit;
+	}
+
+	cil_log(CIL_INFO, "Writing Parse AST\n");
+	rc = cil_write_ast(out, CIL_WRITE_AST_PHASE_PARSE, db->parse->root);
+	if (rc != SEPOL_OK) {
+		cil_log(CIL_ERR, "Failed to write parse ast\n");
+		goto exit;
+	}
+
+exit:
+	return rc;
+}
+
+int cil_write_build_ast(FILE *out, cil_db_t *db)
+{
+	int rc = SEPOL_ERR;
+
+	if (db == NULL) {
+		goto exit;
+	}
+
+	cil_log(CIL_INFO, "Building AST from Parse Tree\n");
+	rc = cil_build_ast(db, db->parse->root, db->ast->root);
+	if (rc != SEPOL_OK) {
+		cil_log(CIL_ERR, "Failed to build ast\n");
+		goto exit;
+	}
+
+	cil_log(CIL_INFO, "Destroying Parse Tree\n");
+	cil_tree_destroy(&db->parse);
+
+	cil_log(CIL_INFO, "Writing Build AST\n");
+	rc = cil_write_ast(out, CIL_WRITE_AST_PHASE_BUILD, db->ast->root);
+	if (rc != SEPOL_OK) {
+		cil_log(CIL_ERR, "Failed to write build ast\n");
+		goto exit;
+	}
+
+exit:
+	return rc;
+}
+
+int cil_write_resolve_ast(FILE *out, cil_db_t *db)
+{
+	int rc = SEPOL_ERR;
+
+	if (db == NULL) {
+		goto exit;
+	}
+
+	cil_log(CIL_INFO, "Building AST from Parse Tree\n");
+	rc = cil_build_ast(db, db->parse->root, db->ast->root);
+	if (rc != SEPOL_OK) {
+		cil_log(CIL_ERR, "Failed to build ast\n");
+		goto exit;
+	}
+
+	cil_log(CIL_INFO, "Destroying Parse Tree\n");
+	cil_tree_destroy(&db->parse);
+
+	cil_log(CIL_INFO, "Resolving AST\n");
+	rc = cil_resolve_ast(db, db->ast->root);
+	if (rc != SEPOL_OK) {
+		cil_log(CIL_ERR, "Failed to resolve ast\n");
+		goto exit;
+	}
+
+	cil_log(CIL_INFO, "Qualifying Names\n");
+	rc = cil_fqn_qualify(db->ast->root);
+	if (rc != SEPOL_OK) {
+		cil_log(CIL_ERR, "Failed to qualify names\n");
+		goto exit;
+	}
+
+	cil_log(CIL_INFO, "Writing Resolve AST\n");
+	rc = cil_write_ast(out, CIL_WRITE_AST_PHASE_RESOLVE, db->ast->root);
+	if (rc != SEPOL_OK) {
+		cil_log(CIL_ERR, "Failed to write resolve ast\n");
+		goto exit;
+	}
+
+exit:
 	return rc;
 }
 
@@ -1780,6 +1873,11 @@ void cil_set_multiple_decls(struct cil_db *db, int multiple_decls)
 	db->multiple_decls = multiple_decls;
 }
 
+void cil_set_qualified_names(struct cil_db *db, int qualified_names)
+{
+	db->qualified_names = qualified_names;
+}
+
 void cil_set_target_platform(struct cil_db *db, int target_platform)
 {
 	db->target_platform = target_platform;
@@ -1790,7 +1888,7 @@ void cil_set_policy_version(struct cil_db *db, int policy_version)
 	db->policy_version = policy_version;
 }
 
-void cil_symtab_array_init(symtab_t symtab[], int symtab_sizes[CIL_SYM_NUM])
+void cil_symtab_array_init(symtab_t symtab[], const int symtab_sizes[CIL_SYM_NUM])
 {
 	uint32_t i = 0;
 	for (i = 0; i < CIL_SYM_NUM; i++) {
@@ -2660,7 +2758,6 @@ void cil_call_init(struct cil_call **call)
 void cil_optional_init(struct cil_optional **optional)
 {
 	*optional = cil_malloc(sizeof(**optional));
-	(*optional)->enabled = CIL_TRUE;
 	cil_symtab_datum_init(&(*optional)->datum);
 }
 

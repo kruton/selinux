@@ -57,10 +57,10 @@
 #include "policydb_validate.h"
 
 #define POLICYDB_TARGET_SZ   ARRAY_SIZE(policydb_target_strings)
-const char *policydb_target_strings[] = { POLICYDB_STRING, POLICYDB_XEN_STRING };
+const char * const policydb_target_strings[] = { POLICYDB_STRING, POLICYDB_XEN_STRING };
 
 /* These need to be updated if SYM_NUM or OCON_NUM changes */
-static struct policydb_compat_info policydb_compat[] = {
+static const struct policydb_compat_info policydb_compat[] = {
 	{
 	 .type = POLICY_KERN,
 	 .version = POLICYDB_VERSION_BOUNDARY,
@@ -460,7 +460,7 @@ static char *symtab_name[SYM_NUM] = {
 };
 #endif
 
-static unsigned int symtab_sizes[SYM_NUM] = {
+static const unsigned int symtab_sizes[SYM_NUM] = {
 	2,
 	32,
 	16,
@@ -471,12 +471,12 @@ static unsigned int symtab_sizes[SYM_NUM] = {
 	16,
 };
 
-struct policydb_compat_info *policydb_lookup_compat(unsigned int version,
-						    unsigned int type,
-						unsigned int target_platform)
+const struct policydb_compat_info *policydb_lookup_compat(unsigned int version,
+						          unsigned int type,
+						          unsigned int target_platform)
 {
 	unsigned int i;
-	struct policydb_compat_info *info = NULL;
+	const struct policydb_compat_info *info = NULL;
 
 	for (i = 0; i < sizeof(policydb_compat) / sizeof(*info); i++) {
 		if (policydb_compat[i].version == version &&
@@ -635,7 +635,7 @@ void role_trans_rule_init(role_trans_rule_t * x)
 	ebitmap_init(&x->classes);
 }
 
-void role_trans_rule_destroy(role_trans_rule_t * x)
+static void role_trans_rule_destroy(role_trans_rule_t * x)
 {
 	if (x != NULL) {
 		role_set_destroy(&x->roles);
@@ -789,6 +789,7 @@ static int roles_init(policydb_t * p)
 	goto out;
 }
 
+ignore_unsigned_overflow_
 static inline unsigned long
 partial_name_hash(unsigned long c, unsigned long prevhash)
 {
@@ -817,11 +818,11 @@ static int filenametr_cmp(hashtab_t h __attribute__ ((unused)),
 	const filename_trans_key_t *ft2 = (const filename_trans_key_t *)k2;
 	int v;
 
-	v = ft1->ttype - ft2->ttype;
+	v = spaceship_cmp(ft1->ttype, ft2->ttype);
 	if (v)
 		return v;
 
-	v = ft1->tclass - ft2->tclass;
+	v = spaceship_cmp(ft1->tclass, ft2->tclass);
 	if (v)
 		return v;
 
@@ -843,15 +844,15 @@ static int rangetr_cmp(hashtab_t h __attribute__ ((unused)),
 	const struct range_trans *key2 = (const struct range_trans *)k2;
 	int v;
 
-	v = key1->source_type - key2->source_type;
+	v = spaceship_cmp(key1->source_type, key2->source_type);
 	if (v)
 		return v;
 
-	v = key1->target_type - key2->target_type;
+	v = spaceship_cmp(key1->target_type, key2->target_type);
 	if (v)
 		return v;
 
-	v = key1->target_class - key2->target_class;
+	v = spaceship_cmp(key1->target_class, key2->target_class);
 
 	return v;
 }
@@ -1166,7 +1167,7 @@ int policydb_index_bools(policydb_t * p)
 	return 0;
 }
 
-int policydb_index_decls(sepol_handle_t * handle, policydb_t * p)
+static int policydb_index_decls(sepol_handle_t * handle, policydb_t * p)
 {
 	avrule_block_t *curblock;
 	avrule_decl_t *decl;
@@ -1426,7 +1427,7 @@ static int range_tr_destroy(hashtab_key_t key, hashtab_datum_t datum,
 	return 0;
 }
 
-void ocontext_selinux_free(ocontext_t **ocontexts)
+static void ocontext_selinux_free(ocontext_t **ocontexts)
 {
 	ocontext_t *c, *ctmp;
 	int i;
@@ -1448,7 +1449,7 @@ void ocontext_selinux_free(ocontext_t **ocontexts)
 	}
 }
 
-void ocontext_xen_free(ocontext_t **ocontexts)
+static void ocontext_xen_free(ocontext_t **ocontexts)
 {
 	ocontext_t *c, *ctmp;
 	int i;
@@ -1747,7 +1748,7 @@ int symtab_insert(policydb_t * pol, uint32_t sym,
 	return retval;
 }
 
-int type_set_or(type_set_t * dst, type_set_t * a, type_set_t * b)
+static int type_set_or(type_set_t * dst, const type_set_t * a, const type_set_t * b)
 {
 	type_set_init(dst);
 
@@ -1764,7 +1765,7 @@ int type_set_or(type_set_t * dst, type_set_t * a, type_set_t * b)
 	return 0;
 }
 
-int type_set_cpy(type_set_t * dst, type_set_t * src)
+int type_set_cpy(type_set_t * dst, const type_set_t * src)
 {
 	type_set_init(dst);
 
@@ -1777,7 +1778,7 @@ int type_set_cpy(type_set_t * dst, type_set_t * src)
 	return 0;
 }
 
-int type_set_or_eq(type_set_t * dst, type_set_t * other)
+int type_set_or_eq(type_set_t * dst, const type_set_t * other)
 {
 	int ret;
 	type_set_t tmp;
@@ -1789,24 +1790,6 @@ int type_set_or_eq(type_set_t * dst, type_set_t * other)
 	type_set_destroy(&tmp);
 
 	return ret;
-}
-
-int role_set_get_role(role_set_t * x, uint32_t role)
-{
-	if (x->flags & ROLE_STAR)
-		return 1;
-
-	if (ebitmap_get_bit(&x->roles, role - 1)) {
-		if (x->flags & ROLE_COMP)
-			return 0;
-		else
-			return 1;
-	} else {
-		if (x->flags & ROLE_COMP)
-			return 1;
-		else
-			return 0;
-	}
 }
 
 /***********************************************************************/
@@ -2521,7 +2504,7 @@ static int type_read(policydb_t * p, hashtab_t h, struct policy_file *fp)
 	return -1;
 }
 
-int role_trans_read(policydb_t *p, struct policy_file *fp)
+static int role_trans_read(policydb_t *p, struct policy_file *fp)
 {
 	role_trans_t **t = &p->role_tr;
 	unsigned int i;
@@ -2564,7 +2547,7 @@ int role_trans_read(policydb_t *p, struct policy_file *fp)
 	return 0;
 }
 
-int role_allow_read(role_allow_t ** r, struct policy_file *fp)
+static int role_allow_read(role_allow_t ** r, struct policy_file *fp)
 {
 	unsigned int i;
 	uint32_t buf[2], nel;
@@ -2839,7 +2822,7 @@ err:
 	return -1;
 }
 
-int filename_trans_read(policydb_t *p, struct policy_file *fp)
+static int filename_trans_read(policydb_t *p, struct policy_file *fp)
 {
 	unsigned int i;
 	uint32_t buf[1], nel;
@@ -2866,7 +2849,7 @@ int filename_trans_read(policydb_t *p, struct policy_file *fp)
 	return 0;
 }
 
-static int ocontext_read_xen(struct policydb_compat_info *info,
+static int ocontext_read_xen(const struct policydb_compat_info *info,
 	policydb_t *p, struct policy_file *fp)
 {
 	unsigned int i, j;
@@ -2975,7 +2958,7 @@ static int ocontext_read_xen(struct policydb_compat_info *info,
 	}
 	return 0;
 }
-static int ocontext_read_selinux(struct policydb_compat_info *info,
+static int ocontext_read_selinux(const struct policydb_compat_info *info,
 			 policydb_t * p, struct policy_file *fp)
 {
 	unsigned int i, j;
@@ -3153,7 +3136,7 @@ static int ocontext_read_selinux(struct policydb_compat_info *info,
 	return 0;
 }
 
-static int ocontext_read(struct policydb_compat_info *info,
+static int ocontext_read(const struct policydb_compat_info *info,
 	policydb_t *p, struct policy_file *fp)
 {
 	int rc = -1;
@@ -4210,7 +4193,7 @@ int policydb_read(policydb_t * p, struct policy_file *fp, unsigned verbose)
 	uint32_t buf[5];
 	size_t len, nprim, nel;
 	char *policydb_str;
-	struct policydb_compat_info *info;
+	const struct policydb_compat_info *info;
 	unsigned int policy_type, bufindex;
 	ebitmap_node_t *tnode;
 	int rc;

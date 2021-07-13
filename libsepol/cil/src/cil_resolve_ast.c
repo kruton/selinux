@@ -46,12 +46,13 @@
 #include "cil_verify.h"
 #include "cil_strpool.h"
 #include "cil_symtab.h"
+#include "cil_stack.h"
 
 struct cil_args_resolve {
 	struct cil_db *db;
 	enum cil_pass pass;
 	uint32_t *changed;
-	struct cil_list *disabled_optionals;
+	struct cil_list *to_destroy;
 	struct cil_tree_node *block;
 	struct cil_tree_node *macro;
 	struct cil_tree_node *optional;
@@ -62,6 +63,7 @@ struct cil_args_resolve {
 	struct cil_list *catorder_lists;
 	struct cil_list *sensitivityorder_lists;
 	struct cil_list *in_list;
+	struct cil_stack *disabled_optionals;
 };
 
 static struct cil_name * __cil_insert_name(struct cil_db *db, hashtab_key_t key, struct cil_tree_node *ast_node)
@@ -157,6 +159,10 @@ int cil_resolve_classperms(struct cil_tree_node *current, struct cil_classperms 
 	struct cil_symtab_datum *datum = NULL;
 	symtab_t *common_symtab = NULL;
 	struct cil_class *class;
+
+	if (cp->class) {
+		return SEPOL_OK;
+	}
 
 	rc = cil_resolve_name(current, cp->class_str, CIL_SYM_CLASSES, extra_args, &datum);
 	if (rc != SEPOL_OK) {
@@ -434,11 +440,6 @@ int cil_resolve_typeattributeset(struct cil_tree_node *current, void *extra_args
 	attr = (struct cil_typeattribute*)attr_datum;
 
 	rc = cil_resolve_expr(CIL_TYPEATTRIBUTESET, attrtypes->str_expr, &attrtypes->datum_expr, current, extra_args);
-	if (rc != SEPOL_OK) {
-		goto exit;
-	}
-
-	rc = cil_verify_no_self_reference(attr_datum, attrtypes->datum_expr);
 	if (rc != SEPOL_OK) {
 		goto exit;
 	}
@@ -772,6 +773,7 @@ int cil_resolve_classcommon(struct cil_tree_node *current, void *extra_args)
 	class->num_perms += common->num_perms;
 	if (class->num_perms > CIL_PERMS_PER_CLASS) {
 		cil_tree_log(current, CIL_ERR, "Too many permissions in class '%s' when including common permissions", class->datum.name);
+		rc = SEPOL_ERR;
 		goto exit;
 	}
 
@@ -1150,11 +1152,6 @@ int cil_resolve_roleattributeset(struct cil_tree_node *current, void *extra_args
 		goto exit;
 	}
 
-	rc = cil_verify_no_self_reference(attr_datum, attrroles->datum_expr);
-	if (rc != SEPOL_OK) {
-		goto exit;
-	}
-
 	if (attr->expr_list == NULL) {
 		cil_list_init(&attr->expr_list, CIL_ROLEATTRIBUTE);
 	}
@@ -1484,6 +1481,12 @@ int cil_resolve_classorder(struct cil_tree_node *current, void *extra_args)
 		rc = cil_resolve_name(current, (char *)curr->data, CIL_SYM_CLASSES, extra_args, &datum);
 		if (rc != SEPOL_OK) {
 			cil_log(CIL_ERR, "Failed to resolve class %s in classorder\n", (char *)curr->data);
+			rc = SEPOL_ERR;
+			goto exit;
+		}
+		if (FLAVOR(datum) != CIL_CLASS) {
+			cil_log(CIL_ERR, "%s is not a class. Only classes are allowed in classorder statements\n", datum->name);
+			rc = SEPOL_ERR;
 			goto exit;
 		}
 		cil_list_append(new, CIL_CLASS, datum);
@@ -1524,6 +1527,12 @@ int cil_resolve_sidorder(struct cil_tree_node *current, void *extra_args)
 			cil_log(CIL_ERR, "Failed to resolve sid %s in sidorder\n", (char *)curr->data);
 			goto exit;
 		}
+		if (FLAVOR(datum) != CIL_SID) {
+			cil_log(CIL_ERR, "%s is not a sid. Only sids are allowed in sidorder statements\n", datum->name);
+			rc = SEPOL_ERR;
+			goto exit;
+		}
+
 		cil_list_append(new, CIL_SID, datum);
 	}
 
@@ -1612,7 +1621,12 @@ int cil_resolve_sensitivityorder(struct cil_tree_node *current, void *extra_args
 	cil_list_for_each(curr, sensorder->sens_list_str) {
 		rc = cil_resolve_name(current, (char *)curr->data, CIL_SYM_SENS, extra_args, &datum);
 		if (rc != SEPOL_OK) {
-			cil_log(CIL_ERR, "Failed to resolve sensitivty %s in sensitivityorder\n", (char *)curr->data);
+			cil_log(CIL_ERR, "Failed to resolve sensitivity %s in sensitivityorder\n", (char *)curr->data);
+			goto exit;
+		}
+		if (FLAVOR(datum) != CIL_SENS) {
+			cil_log(CIL_ERR, "%s is not a sensitivity. Only sensitivities are allowed in sensitivityorder statements\n", datum->name);
+			rc = SEPOL_ERR;
 			goto exit;
 		}
 		cil_list_append(new, CIL_SENS, datum);
@@ -1648,21 +1662,7 @@ exit:
 
 int cil_resolve_catset(struct cil_tree_node *current, struct cil_catset *catset, void *extra_args)
 {
-	int rc = SEPOL_ERR;
-
-	rc = cil_resolve_cats(current, catset->cats, extra_args);
-	if (rc != SEPOL_OK) {
-		goto exit;
-	}
-
-	rc = cil_verify_no_self_reference((struct cil_symtab_datum *)catset, catset->cats->datum_expr);
-	if (rc != SEPOL_OK) {
-		cil_list_destroy(&catset->cats->datum_expr, CIL_FALSE);
-		goto exit;
-	}
-
-exit:
-	return rc;
+	return cil_resolve_cats(current, catset->cats, extra_args);
 }
 
 int cil_resolve_senscat(struct cil_tree_node *current, void *extra_args)
@@ -1701,6 +1701,10 @@ int cil_resolve_level(struct cil_tree_node *current, struct cil_level *level, vo
 {
 	struct cil_symtab_datum *sens_datum = NULL;
 	int rc = SEPOL_ERR;
+
+	if (level->sens) {
+		return SEPOL_OK;
+	}
 
 	rc = cil_resolve_name(current, (char*)level->sens_str, CIL_SYM_SENS, extra_args, &sens_datum);
 	if (rc != SEPOL_OK) {
@@ -2337,77 +2341,6 @@ exit:
 	return rc;
 }
 
-void cil_print_recursive_blockinherit(struct cil_tree_node *bi_node, struct cil_tree_node *terminating_node)
-{
-	struct cil_list *trace = NULL;
-	struct cil_list_item *item = NULL;
-	struct cil_tree_node *curr = NULL;
-
-	cil_list_init(&trace, CIL_NODE);
-
-	for (curr = bi_node; curr != terminating_node; curr = curr->parent) {
-		if (curr->flavor == CIL_BLOCK) {
-			cil_list_prepend(trace, CIL_NODE, curr);
-		} else if (curr->flavor == CIL_BLOCKINHERIT) {
-			if (curr != bi_node) {
-				cil_list_prepend(trace, CIL_NODE, NODE(((struct cil_blockinherit *)curr->data)->block));
-			}
-			cil_list_prepend(trace, CIL_NODE, curr);
-		} else {
-			cil_list_prepend(trace, CIL_NODE, curr);
-		}
-	}
-	cil_list_prepend(trace, CIL_NODE, terminating_node);
-
-	cil_list_for_each(item, trace) {
-		curr = item->data;
-		if (curr->flavor == CIL_BLOCK) {
-			cil_tree_log(curr, CIL_ERR, "block %s", DATUM(curr->data)->name);
-		} else if (curr->flavor == CIL_BLOCKINHERIT) {
-			cil_tree_log(curr, CIL_ERR, "blockinherit %s", ((struct cil_blockinherit *)curr->data)->block_str);
-		} else if (curr->flavor == CIL_OPTIONAL) {
-			cil_tree_log(curr, CIL_ERR, "optional %s", DATUM(curr->data)->name);
-		} else {
-			cil_tree_log(curr, CIL_ERR, "%s", cil_node_to_string(curr));
-		}
-	}
-
-	cil_list_destroy(&trace, CIL_FALSE);
-}
-
-int cil_check_recursive_blockinherit(struct cil_tree_node *bi_node)
-{
-	struct cil_tree_node *curr = NULL;
-	struct cil_blockinherit *bi = NULL;
-	struct cil_block *block = NULL;
-	int rc = SEPOL_ERR;
-
-	bi = bi_node->data;
-
-	for (curr = bi_node->parent; curr != NULL; curr = curr->parent) {
-		if (curr->flavor != CIL_BLOCK) {
-			continue;
-		}
-
-		block = curr->data;
-
-		if (block != bi->block) {
-			continue;
-		}
-
-		cil_log(CIL_ERR, "Recursive blockinherit found:\n");
-		cil_print_recursive_blockinherit(bi_node, curr);
-
-		rc = SEPOL_ERR;
-		goto exit;
-	}
-
-	rc = SEPOL_OK;
-
-exit:
-	return rc;
-}
-
 int cil_resolve_blockinherit_copy(struct cil_tree_node *current, void *extra_args)
 {
 	struct cil_block *block = current->data;
@@ -2431,11 +2364,6 @@ int cil_resolve_blockinherit_copy(struct cil_tree_node *current, void *extra_arg
 	}
 
 	cil_list_for_each(item, block->bi_nodes) {
-		rc = cil_check_recursive_blockinherit(item->data);
-		if (rc != SEPOL_OK) {
-			goto exit;
-		}
-
 		rc = cil_copy_ast(db, current, item->data);
 		if (rc != SEPOL_OK) {
 			cil_log(CIL_ERR, "Failed to copy block contents into blockinherit\n");
@@ -2464,6 +2392,7 @@ int cil_resolve_blockabstract(struct cil_tree_node *current, void *extra_args)
 	block_node = NODE(block_datum);
 	if (block_node->flavor != CIL_BLOCK) {
 		cil_log(CIL_ERR, "Failed to resolve blockabstract to a block, rc: %d\n", rc);
+		rc = SEPOL_ERR;
 		goto exit;
 	}
 
@@ -2494,6 +2423,15 @@ int cil_resolve_in(struct cil_tree_node *current, void *extra_args)
 	}
 
 	block_node = NODE(block_datum);
+
+	if (block_node->flavor == CIL_OPTIONAL) {
+		if (block_datum->nodes && block_datum->nodes->head != block_datum->nodes->tail) {
+			cil_tree_log(current, CIL_ERR, "Multiple optional blocks referred to by in-statement");
+			cil_tree_log(block_node, CIL_ERR, "First optional block");
+			rc = SEPOL_ERR;
+			goto exit;
+		}
+	}
 
 	rc = cil_copy_ast(db, current, block_node);
 	if (rc != SEPOL_OK) {
@@ -2767,338 +2705,297 @@ exit:
 	return rc;
 }
 
-int cil_resolve_call1(struct cil_tree_node *current, void *extra_args)
+static int cil_build_call_args(struct cil_tree_node *call_node, struct cil_call *call, struct cil_macro *macro, void *extra_args)
 {
-	struct cil_call *new_call = current->data;
 	struct cil_args_resolve *args = extra_args;
-	struct cil_db *db = NULL;
-	struct cil_tree_node *macro_node = NULL;
-	struct cil_symtab_datum *macro_datum = NULL;
+	struct cil_list_item *item;
+	struct cil_args *arg = NULL;
+	struct cil_tree_node *arg_node = NULL;
 	int rc = SEPOL_ERR;
 
-	if (args != NULL) {
-		db = args->db;
+	if (macro->params == NULL) {
+		if (call->args_tree == NULL) {
+			return SEPOL_OK;
+		} else {
+			cil_tree_log(call_node, CIL_ERR, "Unexpected arguments");
+			return SEPOL_ERR;
+		}
+	}
+	if (call->args_tree == NULL) {
+		cil_tree_log(call_node, CIL_ERR, "Missing arguments");
+		return SEPOL_ERR;
 	}
 
-	rc = cil_resolve_name(current, new_call->macro_str, CIL_SYM_BLOCKS, extra_args, &macro_datum);
-	if (rc != SEPOL_OK) {
-		goto exit;
-	}
+	arg_node = call->args_tree->root->cl_head;
 
-	macro_node = NODE(macro_datum);
+	cil_list_init(&call->args, CIL_LIST_ITEM);
 
-	if (macro_node->flavor != CIL_MACRO) {
-		cil_tree_log(current, CIL_ERR, "Failed to resolve %s to a macro", new_call->macro_str);
-		rc = SEPOL_ERR;
-		goto exit;
-	}
-	new_call->macro = (struct cil_macro*)macro_datum;
+	cil_list_for_each(item, macro->params) {
+		enum cil_flavor flavor = ((struct cil_param*)item->data)->flavor;
 
-	if (new_call->macro->params != NULL ) {
-
-		struct cil_list_item *item;
-		struct cil_args *new_arg = NULL;
-		struct cil_tree_node *pc = NULL;
-
-		if (new_call->args_tree == NULL) {
-			cil_tree_log(current, CIL_ERR, "Missing arguments");
+		if (arg_node == NULL) {
+			cil_tree_log(call_node, CIL_ERR, "Missing arguments");
+			rc = SEPOL_ERR;
+			goto exit;
+		}
+		if (item->flavor != CIL_PARAM) {
 			rc = SEPOL_ERR;
 			goto exit;
 		}
 
-		pc = new_call->args_tree->root->cl_head;
+		cil_args_init(&arg);
 
-		cil_list_init(&new_call->args, CIL_LIST_ITEM);
-
-		cil_list_for_each(item, new_call->macro->params) {
-			enum cil_flavor flavor = ((struct cil_param*)item->data)->flavor;
-
-			if (pc == NULL) {
-				cil_tree_log(current, CIL_ERR, "Missing arguments");
+		switch (flavor) {
+		case CIL_NAME: {
+			struct cil_name *name;
+			if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
 				rc = SEPOL_ERR;
 				goto exit;
 			}
-			if (item->flavor != CIL_PARAM) {
-				rc = SEPOL_ERR;
-				goto exit;
+			name = __cil_insert_name(args->db, arg_node->data, call_node);
+			if (name != NULL) {
+				arg->arg = (struct cil_symtab_datum *)name;
+			} else {
+				arg->arg_str = arg_node->data;
 			}
-
-			cil_args_init(&new_arg);
-
-			switch (flavor) {
-			case CIL_NAME: {
-				struct cil_name *name;
-				if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				}
-				name = __cil_insert_name(args->db, pc->data, current);
-				if (name != NULL) {
-					new_arg->arg = (struct cil_symtab_datum *)name;
-				} else {
-					new_arg->arg_str = pc->data;
-				}
-			}
-				break;
-			case CIL_TYPE:
-				if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				}
-				new_arg->arg_str = pc->data;
-				break;
-			case CIL_ROLE:
-				if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				}
-				new_arg->arg_str = pc->data;
-				break;
-			case CIL_USER:
-				if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				}
-				new_arg->arg_str = pc->data;
-				break;
-			case CIL_SENS:
-				if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				}
-				new_arg->arg_str = pc->data;
-				break;
-			case CIL_CAT:
-				if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				}
-				new_arg->arg_str = pc->data;
-				break;
-			case CIL_BOOL:
-				if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				}
-				new_arg->arg_str = pc->data;
-				break;
-			case CIL_CATSET: {
-				if (pc->cl_head != NULL) {
-					struct cil_catset *catset = NULL;
-					struct cil_tree_node *cat_node = NULL;
-					cil_catset_init(&catset);
-					rc = cil_fill_cats(pc, &catset->cats);
-					if (rc != SEPOL_OK) {
-						cil_destroy_catset(catset);
-						cil_destroy_args(new_arg);
-						goto exit;
-					}
-					cil_tree_node_init(&cat_node);
-					cat_node->flavor = CIL_CATSET;
-					cat_node->data = catset;
-					cil_list_append(((struct cil_symtab_datum*)catset)->nodes,
-									CIL_LIST_ITEM, cat_node);
-					new_arg->arg = (struct cil_symtab_datum*)catset;
-				} else if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				} else {
-					new_arg->arg_str = pc->data;
-				}
-
-				break;
-			}
-			case CIL_LEVEL: {
-				if (pc->cl_head != NULL) {
-					struct cil_level *level = NULL;
-					struct cil_tree_node *lvl_node = NULL;
-					cil_level_init(&level);
-
-					rc = cil_fill_level(pc->cl_head, level);
-					if (rc != SEPOL_OK) {
-						cil_log(CIL_ERR, "Failed to create anonymous level, rc: %d\n", rc);
-						cil_destroy_level(level);
-						cil_destroy_args(new_arg);
-						goto exit;
-					}
-					cil_tree_node_init(&lvl_node);
-					lvl_node->flavor = CIL_LEVEL;
-					lvl_node->data = level;
-					cil_list_append(((struct cil_symtab_datum*)level)->nodes, 
-									CIL_LIST_ITEM, lvl_node);
-					new_arg->arg = (struct cil_symtab_datum*)level;
-				} else if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				} else {
-					new_arg->arg_str = pc->data;
-				}
-
-				break;
-			}
-			case CIL_LEVELRANGE: {
-				if (pc->cl_head != NULL) {
-					struct cil_levelrange *range = NULL;
-					struct cil_tree_node *range_node = NULL;
-					cil_levelrange_init(&range);
-
-					rc = cil_fill_levelrange(pc->cl_head, range);
-					if (rc != SEPOL_OK) {
-						cil_log(CIL_ERR, "Failed to create anonymous levelrange, rc: %d\n", rc);
-						cil_destroy_levelrange(range);
-						cil_destroy_args(new_arg);
-						goto exit;
-					}
-					cil_tree_node_init(&range_node);
-					range_node->flavor = CIL_LEVELRANGE;
-					range_node->data = range;
-					cil_list_append(((struct cil_symtab_datum*)range)->nodes, 
-									CIL_LIST_ITEM, range_node);
-					new_arg->arg = (struct cil_symtab_datum*)range;
-				} else if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				} else {
-					new_arg->arg_str = pc->data;
-				}
-
-				break;
-			}
-			case CIL_IPADDR: {
-				if (pc->cl_head != NULL) {
-					struct cil_ipaddr *ipaddr = NULL;
-					struct cil_tree_node *addr_node = NULL;
-					cil_ipaddr_init(&ipaddr);
-
-					rc = cil_fill_ipaddr(pc->cl_head, ipaddr);
-					if (rc != SEPOL_OK) {
-						cil_log(CIL_ERR, "Failed to create anonymous ip address, rc: %d\n", rc);
-						cil_destroy_ipaddr(ipaddr);
-						cil_destroy_args(new_arg);
-						goto exit;
-					}
-					cil_tree_node_init(&addr_node);
-					addr_node->flavor = CIL_IPADDR;
-					addr_node->data = ipaddr;
-					cil_list_append(((struct cil_symtab_datum*)ipaddr)->nodes,
-									CIL_LIST_ITEM, addr_node);
-					new_arg->arg = (struct cil_symtab_datum*)ipaddr;
-				} else if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				} else {
-					new_arg->arg_str = pc->data;
-				}
-
-				break;
-			}
-			case CIL_CLASS:
-				if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				}
-				new_arg->arg_str = pc->data;
-				break;
-			case CIL_MAP_CLASS:
-				if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				}
-				new_arg->arg_str = pc->data;
-				break;
-			case CIL_CLASSPERMISSION: {
-				if (pc->cl_head != NULL) {
-					struct cil_classpermission *cp = NULL;
-					struct cil_tree_node *cp_node = NULL;
-
-					cil_classpermission_init(&cp);
-					rc = cil_fill_classperms_list(pc, &cp->classperms);
-					if (rc != SEPOL_OK) {
-						cil_log(CIL_ERR, "Failed to create anonymous classpermission\n");
-						cil_destroy_classpermission(cp);
-						cil_destroy_args(new_arg);
-						goto exit;
-					}
-					cil_tree_node_init(&cp_node);
-					cp_node->flavor = CIL_CLASSPERMISSION;
-					cp_node->data = cp;
-					cil_list_append(cp->datum.nodes, CIL_LIST_ITEM, cp_node);
-					new_arg->arg = (struct cil_symtab_datum*)cp;
-				} else if (pc->data == NULL) {
-					cil_tree_log(current, CIL_ERR, "Invalid macro parameter");
-					cil_destroy_args(new_arg);
-					rc = SEPOL_ERR;
-					goto exit;
-				} else {
-					new_arg->arg_str = pc->data;
-				}
-				break;
-			}
-			default:
-				cil_log(CIL_ERR, "Unexpected flavor: %d\n", 
-						(((struct cil_param*)item->data)->flavor));
-				cil_destroy_args(new_arg);
-				rc = SEPOL_ERR;
-				goto exit;
-			}
-			new_arg->param_str = ((struct cil_param*)item->data)->str;
-			new_arg->flavor = flavor;
-
-			cil_list_append(new_call->args, CIL_ARGS, new_arg);
-
-			pc = pc->next;
 		}
+			break;
+		case CIL_TYPE:
+			if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
+				rc = SEPOL_ERR;
+				goto exit;
+			}
+			arg->arg_str = arg_node->data;
+			break;
+		case CIL_ROLE:
+			if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
+				rc = SEPOL_ERR;
+				goto exit;
+			}
+			arg->arg_str = arg_node->data;
+			break;
+		case CIL_USER:
+			if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
+				rc = SEPOL_ERR;
+				goto exit;
+			}
+			arg->arg_str = arg_node->data;
+			break;
+		case CIL_SENS:
+			if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
+				rc = SEPOL_ERR;
+				goto exit;
+			}
+			arg->arg_str = arg_node->data;
+			break;
+		case CIL_CAT:
+			if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
+				rc = SEPOL_ERR;
+				goto exit;
+			}
+			arg->arg_str = arg_node->data;
+			break;
+		case CIL_BOOL:
+			if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
+				rc = SEPOL_ERR;
+				goto exit;
+			}
+			arg->arg_str = arg_node->data;
+			break;
+		case CIL_CATSET: {
+			if (arg_node->cl_head != NULL) {
+				struct cil_catset *catset = NULL;
+				struct cil_tree_node *cat_node = NULL;
+				cil_catset_init(&catset);
+				rc = cil_fill_cats(arg_node, &catset->cats);
+				if (rc != SEPOL_OK) {
+					cil_destroy_catset(catset);
+					cil_destroy_args(arg);
+					goto exit;
+				}
+				cil_tree_node_init(&cat_node);
+				cat_node->flavor = CIL_CATSET;
+				cat_node->data = catset;
+				cil_list_append(((struct cil_symtab_datum*)catset)->nodes,
+								CIL_LIST_ITEM, cat_node);
+				arg->arg = (struct cil_symtab_datum*)catset;
+			} else if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
+				rc = SEPOL_ERR;
+				goto exit;
+			} else {
+				arg->arg_str = arg_node->data;
+			}
 
-		if (pc != NULL) {
-			cil_tree_log(current, CIL_ERR, "Unexpected arguments");
+			break;
+		}
+		case CIL_LEVEL: {
+			if (arg_node->cl_head != NULL) {
+				struct cil_level *level = NULL;
+				struct cil_tree_node *lvl_node = NULL;
+				cil_level_init(&level);
+
+				rc = cil_fill_level(arg_node->cl_head, level);
+				if (rc != SEPOL_OK) {
+					cil_log(CIL_ERR, "Failed to create anonymous level, rc: %d\n", rc);
+					cil_destroy_level(level);
+					cil_destroy_args(arg);
+					goto exit;
+				}
+				cil_tree_node_init(&lvl_node);
+				lvl_node->flavor = CIL_LEVEL;
+				lvl_node->data = level;
+				cil_list_append(((struct cil_symtab_datum*)level)->nodes,
+								CIL_LIST_ITEM, lvl_node);
+				arg->arg = (struct cil_symtab_datum*)level;
+			} else if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
+				rc = SEPOL_ERR;
+				goto exit;
+			} else {
+				arg->arg_str = arg_node->data;
+			}
+
+			break;
+		}
+		case CIL_LEVELRANGE: {
+			if (arg_node->cl_head != NULL) {
+				struct cil_levelrange *range = NULL;
+				struct cil_tree_node *range_node = NULL;
+				cil_levelrange_init(&range);
+
+				rc = cil_fill_levelrange(arg_node->cl_head, range);
+				if (rc != SEPOL_OK) {
+					cil_log(CIL_ERR, "Failed to create anonymous levelrange, rc: %d\n", rc);
+					cil_destroy_levelrange(range);
+					cil_destroy_args(arg);
+					goto exit;
+				}
+				cil_tree_node_init(&range_node);
+				range_node->flavor = CIL_LEVELRANGE;
+				range_node->data = range;
+				cil_list_append(((struct cil_symtab_datum*)range)->nodes,
+								CIL_LIST_ITEM, range_node);
+				arg->arg = (struct cil_symtab_datum*)range;
+			} else if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
+				rc = SEPOL_ERR;
+				goto exit;
+			} else {
+				arg->arg_str = arg_node->data;
+			}
+
+			break;
+		}
+		case CIL_IPADDR: {
+			if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
+				rc = SEPOL_ERR;
+				goto exit;
+			} else if (strchr(arg_node->data, '.') || strchr(arg_node->data, ':')) {
+				struct cil_ipaddr *ipaddr = NULL;
+				struct cil_tree_node *addr_node = NULL;
+				cil_ipaddr_init(&ipaddr);
+				rc = cil_fill_ipaddr(arg_node, ipaddr);
+				if (rc != SEPOL_OK) {
+					cil_tree_log(call_node, CIL_ERR, "Failed to create anonymous ip address");
+					cil_destroy_ipaddr(ipaddr);
+					cil_destroy_args(arg);
+					goto exit;
+				}
+				cil_tree_node_init(&addr_node);
+				addr_node->flavor = CIL_IPADDR;
+				addr_node->data = ipaddr;
+				cil_list_append(DATUM(ipaddr)->nodes, CIL_LIST_ITEM, addr_node);
+				arg->arg = DATUM(ipaddr);
+			} else {
+				arg->arg_str = arg_node->data;
+			}
+			break;
+		}
+		case CIL_CLASS:
+			if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
+				rc = SEPOL_ERR;
+				goto exit;
+			}
+			arg->arg_str = arg_node->data;
+			break;
+		case CIL_MAP_CLASS:
+			if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
+				rc = SEPOL_ERR;
+				goto exit;
+			}
+			arg->arg_str = arg_node->data;
+			break;
+		case CIL_CLASSPERMISSION: {
+			if (arg_node->cl_head != NULL) {
+				struct cil_classpermission *cp = NULL;
+				struct cil_tree_node *cp_node = NULL;
+
+				cil_classpermission_init(&cp);
+				rc = cil_fill_classperms_list(arg_node, &cp->classperms);
+				if (rc != SEPOL_OK) {
+					cil_log(CIL_ERR, "Failed to create anonymous classpermission\n");
+					cil_destroy_classpermission(cp);
+					cil_destroy_args(arg);
+					goto exit;
+				}
+				cil_tree_node_init(&cp_node);
+				cp_node->flavor = CIL_CLASSPERMISSION;
+				cp_node->data = cp;
+				cil_list_append(cp->datum.nodes, CIL_LIST_ITEM, cp_node);
+				arg->arg = (struct cil_symtab_datum*)cp;
+			} else if (arg_node->data == NULL) {
+				cil_tree_log(call_node, CIL_ERR, "Invalid macro parameter");
+				cil_destroy_args(arg);
+				rc = SEPOL_ERR;
+				goto exit;
+			} else {
+				arg->arg_str = arg_node->data;
+			}
+			break;
+		}
+		default:
+			cil_log(CIL_ERR, "Unexpected flavor: %d\n",
+					(((struct cil_param*)item->data)->flavor));
+			cil_destroy_args(arg);
 			rc = SEPOL_ERR;
 			goto exit;
 		}
-	} else if (new_call->args_tree != NULL) {
-		cil_tree_log(current, CIL_ERR, "Unexpected arguments");
-		rc = SEPOL_ERR;
-		goto exit;
+		arg->param_str = ((struct cil_param*)item->data)->str;
+		arg->flavor = flavor;
+
+		cil_list_append(call->args, CIL_ARGS, arg);
+
+		arg_node = arg_node->next;
 	}
 
-	if (new_call->copied == 0) {
-		new_call->copied = 1;
-
-		rc = cil_check_recursive_call(current, macro_node);
-		if (rc != SEPOL_OK) {
-			goto exit;
-		}
-
-		rc = cil_copy_ast(db, macro_node, current);
-		if (rc != SEPOL_OK) {
-			cil_log(CIL_ERR, "Failed to copy macro, rc: %d\n", rc);
-			goto exit;
-		}
+	if (arg_node != NULL) {
+		cil_tree_log(call_node, CIL_ERR, "Unexpected arguments");
+		rc = SEPOL_ERR;
+		goto exit;
 	}
 
 	return SEPOL_OK;
@@ -3107,19 +3004,69 @@ exit:
 	return rc;
 }
 
-int cil_resolve_call2(struct cil_tree_node *current, void *extra_args)
+int cil_resolve_call(struct cil_tree_node *current, void *extra_args)
 {
-	struct cil_call *new_call = current->data;
+	struct cil_call *call = current->data;
+	struct cil_args_resolve *args = extra_args;
+	struct cil_tree_node *macro_node = NULL;
+	struct cil_symtab_datum *macro_datum = NULL;
+	int rc = SEPOL_ERR;
+
+	if (call->copied) {
+		return SEPOL_OK;
+	}
+
+	rc = cil_resolve_name(current, call->macro_str, CIL_SYM_BLOCKS, extra_args, &macro_datum);
+	if (rc != SEPOL_OK) {
+		goto exit;
+	}
+
+	macro_node = NODE(macro_datum);
+
+	if (macro_node->flavor != CIL_MACRO) {
+		cil_tree_log(current, CIL_ERR, "Failed to resolve %s to a macro", call->macro_str);
+		rc = SEPOL_ERR;
+		goto exit;
+	}
+	call->macro = (struct cil_macro*)macro_datum;
+
+	rc = cil_build_call_args(current, call, call->macro, extra_args);
+	if (rc != SEPOL_OK) {
+		goto exit;
+	}
+
+	rc = cil_check_recursive_call(current, macro_node);
+	if (rc != SEPOL_OK) {
+		goto exit;
+	}
+
+	rc = cil_copy_ast(args->db, macro_node, current);
+	if (rc != SEPOL_OK) {
+		cil_tree_log(current, CIL_ERR, "Failed to copy macro %s to call", macro_datum->name);
+		goto exit;
+	}
+
+	call->copied = 1;
+
+	return SEPOL_OK;
+
+exit:
+	return rc;
+}
+
+int cil_resolve_call_args(struct cil_tree_node *current, void *extra_args)
+{
+	struct cil_call *call = current->data;
 	int rc = SEPOL_ERR;
 	enum cil_sym_index sym_index = CIL_SYM_UNKNOWN;
 	struct cil_list_item *item;
 
-	if (new_call->args == NULL) {
+	if (call->args == NULL) {
 		rc = SEPOL_OK;
 		goto exit;
 	}
 
-	cil_list_for_each(item, new_call->args) {
+	cil_list_for_each(item, call->args) {
 		struct cil_args *arg = item->data;
 		if (arg->arg == NULL && arg->arg_str == NULL) {
 			cil_log(CIL_ERR, "Arguments not created correctly\n");
@@ -3202,9 +3149,36 @@ int cil_resolve_call2(struct cil_tree_node *current, void *extra_args)
 		}
 
 		if (sym_index != CIL_SYM_UNKNOWN) {
-			rc = cil_resolve_name(current, arg->arg_str, sym_index, extra_args, &(arg->arg));
+			struct cil_symtab_datum *datum;
+			struct cil_tree_node *n;
+			rc = cil_resolve_name(current, arg->arg_str, sym_index, extra_args, &datum);
 			if (rc != SEPOL_OK) {
+				cil_tree_log(current, CIL_ERR, "Failed to resolve %s in call argument list", arg->arg_str);
 				goto exit;
+			}
+			arg->arg = datum;
+			n = NODE(datum);
+			while (n && n->flavor != CIL_ROOT) {
+				if (n == current) {
+					symtab_t *s = datum->symtab;
+					/* Call arg should not resolve to declaration in the call
+					 * Need to remove datum temporarily to resolve to a datum outside
+					 * the call.
+					 */
+					cil_symtab_remove_datum(datum);
+					rc = cil_resolve_name(current, arg->arg_str, sym_index, extra_args, &(arg->arg));
+					if (rc != SEPOL_OK) {
+						cil_tree_log(current, CIL_ERR, "Failed to resolve %s in call argument list", arg->arg_str);
+						goto exit;
+					}
+					rc = cil_symtab_insert(s, datum->name, datum, NULL);
+					if (rc != SEPOL_OK) {
+						cil_tree_log(current, CIL_ERR, "Failed to re-insert datum while resolving %s in call argument list", arg->arg_str);
+						goto exit;
+					}
+					break;
+				}
+				n = n->parent;
 			}
 		}
 	}
@@ -3235,7 +3209,7 @@ int cil_resolve_name_call_args(struct cil_call *call, char *name, enum cil_sym_i
 		if (param_index == sym_index) {
 			if (name == arg->param_str) {
 				*datum = arg->arg;
-				rc = SEPOL_OK;
+				rc = *datum ? SEPOL_OK : SEPOL_ERR;
 				goto exit;
 			}
 		}
@@ -3253,6 +3227,8 @@ int cil_resolve_expr(enum cil_flavor expr_type, struct cil_list *str_expr, struc
 	struct cil_list_item *curr;
 	struct cil_symtab_datum *res_datum = NULL;
 	enum cil_sym_index sym_index =  CIL_SYM_UNKNOWN;
+	struct cil_list *datum_sub_expr;
+	enum cil_flavor op = CIL_NONE;
 
 	switch (str_expr->flavor) {
 	case CIL_BOOL:
@@ -3286,31 +3262,53 @@ int cil_resolve_expr(enum cil_flavor expr_type, struct cil_list *str_expr, struc
 			if (rc != SEPOL_OK) {
 				goto exit;
 			}
-
-			if (sym_index == CIL_SYM_TYPES && (expr_type == CIL_CONSTRAIN || expr_type == CIL_VALIDATETRANS)) {
-				cil_type_used(res_datum, CIL_ATTR_CONSTRAINT);
+			if (sym_index == CIL_SYM_CATS && NODE(res_datum)->flavor == CIL_CATSET) {
+				struct cil_catset *catset = (struct cil_catset *)res_datum;
+				if (op == CIL_RANGE) {
+					cil_tree_log(parent, CIL_ERR, "Category set not allowed in category range");
+					rc = SEPOL_ERR;
+					goto exit;
+				}
+				if (!res_datum->name) {
+					/* Anonymous category sets need to be resolved when encountered */
+					if (!catset->cats->datum_expr) {
+						rc = cil_resolve_expr(expr_type, catset->cats->str_expr, &catset->cats->datum_expr, parent, extra_args);
+						if (rc != SEPOL_OK) {
+							goto exit;
+						}
+					}
+					cil_copy_list(catset->cats->datum_expr, &datum_sub_expr);
+					cil_list_append(*datum_expr, CIL_LIST, datum_sub_expr);
+				} else {
+					cil_list_append(*datum_expr, CIL_DATUM, res_datum);
+				}
+			} else {
+				if (sym_index == CIL_SYM_TYPES && (expr_type == CIL_CONSTRAIN || expr_type == CIL_VALIDATETRANS)) {
+					cil_type_used(res_datum, CIL_ATTR_CONSTRAINT);
+				}
+				cil_list_append(*datum_expr, CIL_DATUM, res_datum);
 			}
-
-			cil_list_append(*datum_expr, CIL_DATUM, res_datum);
 			break;
 		case CIL_LIST: {
-			struct cil_list *datum_sub_expr;
 			rc = cil_resolve_expr(expr_type, curr->data, &datum_sub_expr, parent, extra_args);
 			if (rc != SEPOL_OK) {
-				cil_list_destroy(&datum_sub_expr, CIL_TRUE);
 				goto exit;
 			}
 			cil_list_append(*datum_expr, CIL_LIST, datum_sub_expr);
 			break;
 		}
 		default:
+			if (curr->flavor == CIL_OP) {
+				op = (enum cil_flavor)(uintptr_t)curr->data;
+			}
 			cil_list_append(*datum_expr, curr->flavor, curr->data);
 			break;
-		}				
+		}
 	}
 	return SEPOL_OK;
 
 exit:
+	cil_list_destroy(datum_expr, CIL_FALSE);
 	return rc;
 }
 
@@ -3471,11 +3469,6 @@ int cil_resolve_userattributeset(struct cil_tree_node *current, void *extra_args
 		goto exit;
 	}
 
-	rc = cil_verify_no_self_reference(attr_datum, attrusers->datum_expr);
-	if (rc != SEPOL_OK) {
-		goto exit;
-	}
-
 	if (attr->expr_list == NULL) {
 		cil_list_init(&attr->expr_list, CIL_USERATTRIBUTE);
 	}
@@ -3485,6 +3478,110 @@ int cil_resolve_userattributeset(struct cil_tree_node *current, void *extra_args
 	return SEPOL_OK;
 
 exit:
+	return rc;
+}
+
+/*
+ * Degenerate inheritance leads to exponential growth of the policy
+ * It can take many forms, but here is one example.
+ * ...
+ * (blockinherit ba)
+ * (block b0
+ *   (block b1
+ *     (block b2
+ *       (block b3
+ *         ...
+ *       )
+ *       (blockinherit b3)
+ *     )
+ *     (blockinherit b2)
+ *   )
+ *   (blockinherit b1)
+ * )
+ * (blockinherit b0)
+ * ...
+ * This leads to 2^4 copies of the content of block b3, 2^3 copies of the
+ * contents of block b2, etc.
+ */
+static unsigned cil_count_actual(struct cil_tree_node *node)
+{
+	unsigned count = 0;
+
+	if (node->flavor == CIL_BLOCKINHERIT) {
+		count += 1;
+	}
+
+	for (node = node->cl_head; node; node = node->next) {
+		count += cil_count_actual(node);
+	}
+
+	return count;
+}
+
+static int cil_check_inheritances(struct cil_tree_node *node, unsigned max, unsigned *count, struct cil_stack *stack, unsigned *loop)
+{
+	int rc;
+
+	if (node->flavor == CIL_BLOCKINHERIT) {
+		struct cil_blockinherit *bi = node->data;
+		*count += 1;
+		if (*count > max) {
+			cil_tree_log(node, CIL_ERR, "Degenerate inheritance detected");
+			return SEPOL_ERR;
+		}
+		if (bi->block) {
+			struct cil_tree_node *block_node = NODE(bi->block);
+			struct cil_stack_item *item;
+			int i = 0;
+			cil_stack_for_each(stack, i, item) {
+				if (block_node == (struct cil_tree_node *)item->data) {
+					*loop = CIL_TRUE;
+					cil_tree_log(block_node, CIL_ERR, "Block inheritance loop found");
+					cil_tree_log(node, CIL_ERR, "  blockinherit");
+					return SEPOL_ERR;
+				}
+			}
+			cil_stack_push(stack, CIL_BLOCK, block_node);
+			rc = cil_check_inheritances(block_node, max, count, stack, loop);
+			cil_stack_pop(stack);
+			if (rc != SEPOL_OK) {
+				if (*loop == CIL_TRUE) {
+					cil_tree_log(node, CIL_ERR, "  blockinherit");
+				}
+				return SEPOL_ERR;
+			}
+		}
+	}
+
+	for (node = node->cl_head; node; node = node->next) {
+		rc = cil_check_inheritances(node, max, count, stack, loop);
+		if (rc != SEPOL_OK) {
+			return SEPOL_ERR;
+		}
+	}
+
+	return SEPOL_OK;
+}
+
+static int cil_check_for_bad_inheritance(struct cil_tree_node *node)
+{
+	unsigned num_actual, max;
+	unsigned num_potential = 0;
+	unsigned loop = CIL_FALSE;
+	struct cil_stack *stack;
+	int rc;
+
+	num_actual = cil_count_actual(node);
+
+	max = num_actual * CIL_DEGENERATE_INHERITANCE_GROWTH;
+	if (max < CIL_DEGENERATE_INHERITANCE_MINIMUM) {
+		max = CIL_DEGENERATE_INHERITANCE_MINIMUM;
+	}
+
+	cil_stack_init(&stack);
+	rc = cil_check_inheritances(node, max, &num_potential, stack, &loop);
+	cil_stack_destroy(&stack);
+
 	return rc;
 }
 
@@ -3529,19 +3626,14 @@ int __cil_resolve_ast_node(struct cil_tree_node *node, void *extra_args)
 			rc = cil_resolve_blockabstract(node, args);
 		}
 		break;
-	case CIL_PASS_MACRO:
-		if (node->flavor == CIL_CALL && args->macro != NULL) {
-			rc = cil_resolve_call1(node, args);
-		}
-		break;
 	case CIL_PASS_CALL1:
-		if (node->flavor == CIL_CALL) {
-			rc = cil_resolve_call1(node, args);
+		if (node->flavor == CIL_CALL && args->macro == NULL) {
+			rc = cil_resolve_call(node, args);
 		}
 		break;
 	case CIL_PASS_CALL2:
-		if (node->flavor == CIL_CALL) {
-			rc = cil_resolve_call2(node, args);
+		if (node->flavor == CIL_CALL && args->macro == NULL) {
+			rc = cil_resolve_call_args(node, args);
 		}
 		break;
 	case CIL_PASS_ALIAS1:
@@ -3781,6 +3873,7 @@ int __cil_resolve_ast_node_helper(struct cil_tree_node *node, uint32_t *finished
 	struct cil_tree_node *macro = args->macro;
 	struct cil_tree_node *optional = args->optional;
 	struct cil_tree_node *boolif = args->boolif;
+	struct cil_stack *disabled_optionals = args->disabled_optionals;
 
 	if (node == NULL) {
 		goto exit;
@@ -3845,7 +3938,7 @@ int __cil_resolve_ast_node_helper(struct cil_tree_node *node, uint32_t *finished
 	}
 
 	if (node->flavor == CIL_MACRO) {
-		if (pass != CIL_PASS_TIF && pass != CIL_PASS_MACRO) {
+		if (pass != CIL_PASS_TIF) {
 			*finished = CIL_TREE_SKIP_HEAD;
 			rc = SEPOL_OK;
 			goto exit;
@@ -3860,22 +3953,14 @@ int __cil_resolve_ast_node_helper(struct cil_tree_node *node, uint32_t *finished
 
 	rc = __cil_resolve_ast_node(node, extra_args);
 	if (rc == SEPOL_ENOENT) {
-		enum cil_log_level lvl = CIL_ERR;
-
-		if (optional != NULL) {
-			lvl = CIL_INFO;
-
-			struct cil_optional *opt = (struct cil_optional *)optional->data;
-			struct cil_tree_node *opt_node = NODE(opt);;
-			/* disable an optional if something failed to resolve */
-			opt->enabled = CIL_FALSE;
-			cil_tree_log(node, lvl, "Failed to resolve %s statement", cil_node_to_string(node));
-			cil_tree_log(opt_node, lvl, "Disabling optional '%s'", opt->datum.name);
+		if (optional == NULL) {
+			cil_tree_log(node, CIL_ERR, "Failed to resolve %s statement", cil_node_to_string(node));
+		} else {
+			cil_stack_push(disabled_optionals, CIL_NODE, optional);
+			cil_tree_log(node, CIL_INFO, "Failed to resolve %s statement", cil_node_to_string(node));
+			cil_tree_log(optional, CIL_INFO, "Disabling optional '%s'", DATUM(optional->data)->name);
 			rc = SEPOL_OK;
-			goto exit;
 		}
-
-		cil_tree_log(node, lvl, "Failed to resolve %s statement", cil_node_to_string(node));
 		goto exit;
 	}
 
@@ -3918,6 +4003,7 @@ int __cil_resolve_ast_last_child_helper(struct cil_tree_node *current, void *ext
 {
 	int rc = SEPOL_ERR;
 	struct cil_args_resolve *args = extra_args;
+	struct cil_stack *disabled_optionals = args->disabled_optionals;
 	struct cil_tree_node *parent = NULL;
 
 	if (current == NULL ||  extra_args == NULL) {
@@ -3940,9 +4026,11 @@ int __cil_resolve_ast_last_child_helper(struct cil_tree_node *current, void *ext
 		args->macro = NULL;
 	} else if (parent->flavor == CIL_OPTIONAL) {
 		struct cil_tree_node *n = parent->parent;
-		if (((struct cil_optional *)parent->data)->enabled == CIL_FALSE) {
+		struct cil_stack_item *item = cil_stack_peek(disabled_optionals);
+		if (item && item->data == parent) {
+			cil_stack_pop(disabled_optionals);
 			*(args->changed) = CIL_TRUE;
-			cil_list_append(args->disabled_optionals, CIL_NODE, parent);
+			cil_list_append(args->to_destroy, CIL_NODE, parent);
 		}
 		args->optional = NULL;
 		while (n && n->flavor != CIL_ROOT) {
@@ -3986,14 +4074,17 @@ int cil_resolve_ast(struct cil_db *db, struct cil_tree_node *current)
 	extra_args.catorder_lists = NULL;
 	extra_args.sensitivityorder_lists = NULL;
 	extra_args.in_list = NULL;
+	extra_args.disabled_optionals = NULL;
 
-	cil_list_init(&extra_args.disabled_optionals, CIL_NODE);
+	cil_list_init(&extra_args.to_destroy, CIL_NODE);
 	cil_list_init(&extra_args.sidorder_lists, CIL_LIST_ITEM);
 	cil_list_init(&extra_args.classorder_lists, CIL_LIST_ITEM);
 	cil_list_init(&extra_args.unordered_classorder_lists, CIL_LIST_ITEM);
 	cil_list_init(&extra_args.catorder_lists, CIL_LIST_ITEM);
 	cil_list_init(&extra_args.sensitivityorder_lists, CIL_LIST_ITEM);
 	cil_list_init(&extra_args.in_list, CIL_IN);
+	cil_stack_init(&extra_args.disabled_optionals);
+
 	for (pass = CIL_PASS_TIF; pass < CIL_PASS_NUM; pass++) {
 		extra_args.pass = pass;
 		rc = cil_tree_walk(current, __cil_resolve_ast_node_helper, __cil_resolve_ast_first_child_helper, __cil_resolve_ast_last_child_helper, &extra_args);
@@ -4008,6 +4099,14 @@ int cil_resolve_ast(struct cil_db *db, struct cil_tree_node *current)
 				goto exit;
 			}
 			cil_list_destroy(&extra_args.in_list, CIL_FALSE);
+		}
+
+		if (pass == CIL_PASS_BLKIN_LINK) {
+			rc = cil_check_for_bad_inheritance(current);
+			if (rc != SEPOL_OK) {
+				rc = SEPOL_ERR;
+				goto exit;
+			}
 		}
 
 		if (pass == CIL_PASS_MISC1) {
@@ -4054,41 +4153,53 @@ int cil_resolve_ast(struct cil_db *db, struct cil_tree_node *current)
 			}
 		}
 
-		if (changed && (pass > CIL_PASS_CALL1)) {
+		if (changed) {
 			struct cil_list_item *item;
-			/* Need to re-resolve because an optional was disabled that contained
-			 * one or more declarations. We only need to reset to the call1 pass 
-			 * because things done in the preceding passes aren't allowed in 
-			 * optionals, and thus can't be disabled.
-			 * Note: set pass to CIL_PASS_CALL1 because the pass++ will increment 
-			 * it to CIL_PASS_CALL2
-			 */
-			cil_log(CIL_INFO, "Resetting declarations\n");
+			if (pass > CIL_PASS_CALL1) {
+				int has_decls = CIL_FALSE;
 
-			if (pass >= CIL_PASS_MISC1) {
-				__cil_ordered_lists_reset(&extra_args.sidorder_lists);
-				__cil_ordered_lists_reset(&extra_args.classorder_lists);
-				__cil_ordered_lists_reset(&extra_args.unordered_classorder_lists);
-				__cil_ordered_lists_reset(&extra_args.catorder_lists);
-				__cil_ordered_lists_reset(&extra_args.sensitivityorder_lists);
-				cil_list_destroy(&db->sidorder, CIL_FALSE);
-				cil_list_destroy(&db->classorder, CIL_FALSE);
-				cil_list_destroy(&db->catorder, CIL_FALSE);
-				cil_list_destroy(&db->sensitivityorder, CIL_FALSE);
+				cil_list_for_each(item, extra_args.to_destroy) {
+					has_decls = cil_tree_subtree_has_decl(item->data);
+					if (has_decls) {
+						break;
+					}
+				}
+
+				if (has_decls) {
+					/* Need to re-resolve because an optional was disabled that
+					 * contained one or more declarations.
+					 * Everything that needs to be reset comes after the
+					 * CIL_PASS_CALL2 pass. We set pass to CIL_PASS_CALL1 because
+					 * the pass++ will increment it to CIL_PASS_CALL2
+					 */
+					cil_log(CIL_INFO, "Resetting declarations\n");
+
+					if (pass >= CIL_PASS_MISC1) {
+						__cil_ordered_lists_reset(&extra_args.sidorder_lists);
+						__cil_ordered_lists_reset(&extra_args.classorder_lists);
+						__cil_ordered_lists_reset(&extra_args.unordered_classorder_lists);
+						__cil_ordered_lists_reset(&extra_args.catorder_lists);
+						__cil_ordered_lists_reset(&extra_args.sensitivityorder_lists);
+						cil_list_destroy(&db->sidorder, CIL_FALSE);
+						cil_list_destroy(&db->classorder, CIL_FALSE);
+						cil_list_destroy(&db->catorder, CIL_FALSE);
+						cil_list_destroy(&db->sensitivityorder, CIL_FALSE);
+					}
+
+					pass = CIL_PASS_CALL1;
+
+					rc = cil_reset_ast(current);
+					if (rc != SEPOL_OK) {
+						cil_log(CIL_ERR, "Failed to reset declarations\n");
+						goto exit;
+					}
+				}
 			}
-
-			pass = CIL_PASS_CALL1;
-
-			rc = cil_reset_ast(current);
-			if (rc != SEPOL_OK) {
-				cil_log(CIL_ERR, "Failed to reset declarations\n");
-				goto exit;
-			}
-			cil_list_for_each(item, extra_args.disabled_optionals) {
+			cil_list_for_each(item, extra_args.to_destroy) {
 				cil_tree_children_destroy(item->data);
 			}
-			cil_list_destroy(&extra_args.disabled_optionals, CIL_FALSE);
-			cil_list_init(&extra_args.disabled_optionals, CIL_NODE);
+			cil_list_destroy(&extra_args.to_destroy, CIL_FALSE);
+			cil_list_init(&extra_args.to_destroy, CIL_NODE);
 			changed = 0;
 		}
 	}
@@ -4105,8 +4216,9 @@ exit:
 	__cil_ordered_lists_destroy(&extra_args.catorder_lists);
 	__cil_ordered_lists_destroy(&extra_args.sensitivityorder_lists);
 	__cil_ordered_lists_destroy(&extra_args.unordered_classorder_lists);
-	cil_list_destroy(&extra_args.disabled_optionals, CIL_FALSE);
+	cil_list_destroy(&extra_args.to_destroy, CIL_FALSE);
 	cil_list_destroy(&extra_args.in_list, CIL_FALSE);
+	cil_stack_destroy(&extra_args.disabled_optionals);
 
 	return rc;
 }
@@ -4137,7 +4249,7 @@ static int __cil_resolve_name_with_parents(struct cil_tree_node *node, char *nam
 			rc = __cil_resolve_name_with_parents(node->parent, name, sym_index, datum);
 			if (rc != SEPOL_OK) {
 				/* Continue search in original block's parent */
-				rc = __cil_resolve_name_with_parents(NODE(inherit->block), name, sym_index, datum);
+				rc = __cil_resolve_name_with_parents(NODE(inherit->block)->parent, name, sym_index, datum);
 				goto exit;
 			}
 		}
@@ -4150,10 +4262,18 @@ static int __cil_resolve_name_with_parents(struct cil_tree_node *node, char *nam
 			break;
 		case CIL_CALL: {
 			struct cil_call *call = node->data;
-			rc = cil_resolve_name_call_args(call, name, sym_index, datum);
-			if (rc != SEPOL_OK) {
-				/* Continue search in macro's parent */
-				rc = __cil_resolve_name_with_parents(NODE(call->macro)->parent, name, sym_index, datum);
+			struct cil_macro *macro = call->macro;
+			symtab = &macro->symtab[sym_index];
+			rc = cil_symtab_get_datum(symtab, name, datum);
+			if (rc == SEPOL_OK) {
+				/* If the name was declared in the macro, just look on the call side */
+				rc = SEPOL_ERR;
+			} else {
+				rc = cil_resolve_name_call_args(call, name, sym_index, datum);
+				if (rc != SEPOL_OK) {
+					/* Continue search in macro's parent */
+					rc = __cil_resolve_name_with_parents(NODE(call->macro)->parent, name, sym_index, datum);
+				}
 			}
 		}
 			break;
@@ -4225,8 +4345,8 @@ int cil_resolve_name_keep_aliases(struct cil_tree_node *ast_node, char *name, en
 
 	*datum = NULL;
 
-	if (strchr(name,'.') == NULL) {
-		/* No '.' in name */
+	if (db->qualified_names || strchr(name,'.') == NULL) {
+		/* Using qualified names or No '.' in name */
 		rc = __cil_resolve_name_helper(db, ast_node->parent, name, sym_index, datum);
 		if (rc != SEPOL_OK) {
 			goto exit;

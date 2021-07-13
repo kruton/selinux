@@ -78,17 +78,30 @@ static pthread_once_t once = PTHREAD_ONCE_INIT;
 static pthread_key_t destructor_key;
 static int destructor_key_initialized = 0;
 
+static void free_array_elts(void)
+{
+	int i;
+	for (i = 0; i < con_array_used; i++)
+		free(con_array[i]);
+	free(con_array);
+
+	con_array_size = con_array_used = 0;
+	con_array = NULL;
+}
+
 static int add_array_elt(char *con)
 {
+	char **tmp;
 	if (con_array_size) {
 		while (con_array_used >= con_array_size) {
 			con_array_size *= 2;
-			con_array = (char **)realloc(con_array, sizeof(char*) *
+			tmp = (char **)realloc(con_array, sizeof(char*) *
 						     con_array_size);
-			if (!con_array) {
-				con_array_size = con_array_used = 0;
+			if (!tmp) {
+				free_array_elts();
 				return -1;
 			}
+			con_array = tmp;
 		}
 	} else {
 		con_array_size = 1000;
@@ -103,13 +116,6 @@ static int add_array_elt(char *con)
 	if (!con_array[con_array_used])
 		return -1;
 	return con_array_used++;
-}
-
-static void free_array_elts(void)
-{
-	con_array_size = con_array_used = 0;
-	free(con_array);
-	con_array = NULL;
 }
 
 void set_matchpathcon_invalidcon(int (*f) (const char *p, unsigned l, char *c))
@@ -477,15 +483,15 @@ void matchpathcon_checkmatches(char *str __attribute__((unused)))
 int selinux_file_context_cmp(const char * a,
 			     const char * b)
 {
-	char *rest_a, *rest_b;	/* Rest of the context after the user */
+	const char *rest_a, *rest_b;	/* Rest of the context after the user */
 	if (!a && !b)
 		return 0;
 	if (!a)
 		return -1;
 	if (!b)
 		return 1;
-	rest_a = strchr((char *)a, ':');
-	rest_b = strchr((char *)b, ':');
+	rest_a = strchr(a, ':');
+	rest_b = strchr(b, ':');
 	if (!rest_a && !rest_b)
 		return 0;
 	if (!rest_a)

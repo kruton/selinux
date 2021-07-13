@@ -41,22 +41,26 @@
 #endif
 #include <sepol/policydb.h>
 
+enum write_ast_phase {
+	WRITE_AST_PHASE_PARSE = 0,
+	WRITE_AST_PHASE_BUILD,
+	WRITE_AST_PHASE_RESOLVE,
+};
+
 static __attribute__((__noreturn__)) void usage(const char *prog)
 {
 	printf("Usage: %s [OPTION]... FILE...\n", prog);
 	printf("\n");
 	printf("Options:\n");
-	printf("  -o, --output=<file>            write policy.conf to <file>\n");
-	printf("                                 (default: policy.conf)\n");
-	printf("  -M, --mls true|false           write an mls policy. Must be true or false.\n");
-	printf("                                 This will override the (mls boolean) statement\n");
-	printf("                                 if present in the policy\n");
-	printf("  -P, --preserve-tunables        treat tunables as booleans\n");
-	printf("  -Q, --qualified-names          Allow names containing dots (qualified names).\n");
-	printf("                                 Blocks, blockinherits, blockabstracts, and\n");
-	printf("                                 in-statements will not be allowed.\n");
-	printf("  -v, --verbose                  increment verbosity level\n");
-	printf("  -h, --help                     display usage information\n");
+	printf("  -o, --output=<file>      write AST to <file>. (default: stdout)\n");
+	printf("  -P, --preserve-tunables  treat tunables as booleans\n");
+	printf("  -Q, --qualified-names    Allow names containing dots (qualified names).\n");
+	printf("                           Blocks, blockinherits, blockabstracts, and\n");
+	printf("                           in-statements will not be allowed.\n");
+	printf("  -A, --ast-phase=<phase>  write AST of phase <phase>. Phase must be parse, \n");
+	printf("                           build, or resolve. (default: resolve)\n");
+	printf("  -v, --verbose            increment verbosity level\n");
+	printf("  -h, --help               display usage information\n");
 	exit(1);
 }
 
@@ -69,40 +73,31 @@ int main(int argc, char *argv[])
 	uint32_t file_size;
 	char *output = NULL;
 	struct cil_db *db = NULL;
-	int mls = -1;
 	int preserve_tunables = 0;
 	int qualified_names = 0;
+	enum write_ast_phase write_ast = WRITE_AST_PHASE_RESOLVE;
 	int opt_char;
 	int opt_index = 0;
 	enum cil_log_level log_level = CIL_ERR;
 	static struct option long_opts[] = {
 		{"help", no_argument, 0, 'h'},
 		{"verbose", no_argument, 0, 'v'},
-		{"mls", required_argument, 0, 'M'},
 		{"preserve-tunables", no_argument, 0, 'P'},
 		{"qualified-names", no_argument, 0, 'Q'},
 		{"output", required_argument, 0, 'o'},
+		{"ast-phase", required_argument, 0, 'A'},
 		{0, 0, 0, 0}
 	};
 	int i;
 
 	while (1) {
-		opt_char = getopt_long(argc, argv, "o:hvM:PQ", long_opts, &opt_index);
+		opt_char = getopt_long(argc, argv, "o:hvPQA:", long_opts, &opt_index);
 		if (opt_char == -1) {
 			break;
 		}
 		switch (opt_char) {
 			case 'v':
 				log_level++;
-				break;
-			case 'M':
-				if (!strcasecmp(optarg, "true") || !strcasecmp(optarg, "1")) {
-					mls = 1;
-				} else if (!strcasecmp(optarg, "false") || !strcasecmp(optarg, "0")) {
-					mls = 0;
-				} else {
-					usage(argv[0]);
-				}
 				break;
 			case 'P':
 				preserve_tunables = 1;
@@ -113,15 +108,28 @@ int main(int argc, char *argv[])
 			case 'o':
 				output = strdup(optarg);
 				break;
+			case 'A':
+				if (!strcasecmp(optarg, "parse")) {
+					write_ast = WRITE_AST_PHASE_PARSE;
+				} else if (!strcasecmp(optarg, "build")) {
+					write_ast = WRITE_AST_PHASE_BUILD;
+				} else if (!strcasecmp(optarg, "resolve")) {
+					write_ast = WRITE_AST_PHASE_RESOLVE;
+				} else {
+					fprintf(stderr, "Invalid AST phase: %s\n", optarg);
+					usage(argv[0]);
+				}
+				break;
 			case 'h':
 				usage(argv[0]);
 			case '?':
 				break;
 			default:
-					fprintf(stderr, "Unsupported option: %s\n", optarg);
+				fprintf(stderr, "Unsupported option: %s\n", optarg);
 				usage(argv[0]);
 		}
 	}
+
 	if (optind >= argc) {
 		fprintf(stderr, "No cil files specified\n");
 		usage(argv[0]);
@@ -132,7 +140,6 @@ int main(int argc, char *argv[])
 	cil_db_init(&db);
 	cil_set_preserve_tunables(db, preserve_tunables);
 	cil_set_qualified_names(db, qualified_names);
-	cil_set_mls(db, mls);
 	cil_set_attrs_expand_generated(db, 0);
 	cil_set_attrs_expand_size(db, 0);
 
@@ -169,31 +176,36 @@ int main(int argc, char *argv[])
 		buffer = NULL;
 	}
 
-	rc = cil_compile(db);
-	if (rc != SEPOL_OK) {
-		fprintf(stderr, "Failed to compile cildb: %d\n", rc);
-		goto exit;
-	}
-
 	if (output == NULL) {
-		file = fopen("policy.conf", "w");
+		file = stdout;
 	} else {
 		file = fopen(output, "w");
+		if (file == NULL) {
+			fprintf(stderr, "Failure opening file %s for writing\n", output);
+			rc = SEPOL_ERR;
+			goto exit;
+		}
 	}
-	if (file == NULL) {
-		fprintf(stderr, "Failure opening policy.conf file for writing\n");
-		rc = SEPOL_ERR;
+
+	switch (write_ast) {
+	case WRITE_AST_PHASE_PARSE:
+		rc = cil_write_parse_ast(file, db);
+		break;
+	case WRITE_AST_PHASE_BUILD:
+		rc = cil_write_build_ast(file, db);
+		break;
+	case WRITE_AST_PHASE_RESOLVE:
+		rc = cil_write_resolve_ast(file, db);
+		break;
+	}
+
+	if (rc != SEPOL_OK) {
+		fprintf(stderr, "Failed to write AST\n");
 		goto exit;
 	}
 
-	cil_write_policy_conf(file, db);
-
-	fclose(file);
-	file = NULL;
-	rc = SEPOL_OK;
-
 exit:
-	if (file != NULL) {
+	if (file != NULL && file != stdin) {
 		fclose(file);
 	}
 	free(buffer);

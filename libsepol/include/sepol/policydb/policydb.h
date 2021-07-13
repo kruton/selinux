@@ -251,9 +251,9 @@ typedef struct class_perm_node {
 	struct class_perm_node *next;
 } class_perm_node_t;
 
-#define xperm_test(x, p) (1 & (p[x >> 5] >> (x & 0x1f)))
-#define xperm_set(x, p) (p[x >> 5] |= (1 << (x & 0x1f)))
-#define xperm_clear(x, p) (p[x >> 5] &= ~(1 << (x & 0x1f)))
+#define xperm_test(x, p) (UINT32_C(1) & (p[x >> 5] >> (x & 0x1f)))
+#define xperm_set(x, p) (p[x >> 5] |= (UINT32_C(1) << (x & 0x1f)))
+#define xperm_clear(x, p) (p[x >> 5] &= ~(UINT32_C(1) << (x & 0x1f)))
 #define EXTENDED_PERMS_LEN 8
 
 typedef struct av_extended_perms {
@@ -667,8 +667,8 @@ extern int scope_destroy(hashtab_key_t key, hashtab_datum_t datum, void *p);
 extern void class_perm_node_init(class_perm_node_t * x);
 extern void type_set_init(type_set_t * x);
 extern void type_set_destroy(type_set_t * x);
-extern int type_set_cpy(type_set_t * dst, type_set_t * src);
-extern int type_set_or_eq(type_set_t * dst, type_set_t * other);
+extern int type_set_cpy(type_set_t * dst, const type_set_t * src);
+extern int type_set_or_eq(type_set_t * dst, const type_set_t * other);
 extern void role_set_init(role_set_t * x);
 extern void role_set_destroy(role_set_t * x);
 extern void avrule_init(avrule_t * x);
